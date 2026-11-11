@@ -95,6 +95,9 @@
     follow: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.9"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/><path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
     cube: '<svg viewBox="0 0 24 24"><path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2Z M4 7.2l8 4.4 8-4.4 M12 11.6v9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
     fit: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    hist: '<svg viewBox="0 0 24 24"><path d="M4.6 12.4A7.5 7.5 0 1 0 6.8 6.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5.6 3.6v3.8h3.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 8v4.4l2.9 1.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    play: '<svg viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12z" fill="currentColor"/></svg>',
+    pause: '<svg viewBox="0 0 24 24"><path d="M6.8 5h3.7v14H6.8zM13.5 5h3.7v14h-3.7z" fill="currentColor"/></svg>',
   };
 
   // ------------------------------------------------------------------ detailed drone icon (top view, nose up)
@@ -190,7 +193,7 @@
     // Terrain is switched on only in 3D view (apply3d). In 2D it made the drone and pilot icons
     // jump around while zooming, as coarser or finer elevation tiles loaded under them.
     const src = (id, extra) => map.addSource(id, Object.assign({ type: 'geojson', data: EMPTY }, extra || {}));
-    ['sua', 'nofly', 'stadium', 'laanc', 'topilot', 'meacc', 'airtrails', 'trailold', 'links', 'shadow', 'stalk', 'trail3d', 'drone3d', 'airspace', 'airports'].forEach(id => src(id));
+    ['sua', 'nofly', 'stadium', 'laanc', 'topilot', 'meacc', 'airtrails', 'trailold', 'links', 'shadow', 'stalk', 'trail3d', 'drone3d', 'airspace', 'airports', 'rpghost'].forEach(id => src(id));
     src('trail', { lineMetrics: true });
     addAviationLayers();
     map.addLayer({ id: 'meacc', type: 'fill', source: 'meacc', paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.13 } });
@@ -212,6 +215,9 @@
     // liquid glass"): a soft glow in the drone's colour, a dark edge so it stands out on fields, roads and trees, a thick opaque core
     // that brightens toward the drone, and a thin white highlight along it. The core stays opaque so crossings never stack into blotches.
     const TW = (a, b, c) => ['interpolate', ['linear'], ['zoom'], 10, a, 14, b, 17, c];
+    // flight replay: the whole flight, faint and dashed, under the part already flown
+    map.addLayer({ id: 'rpghost', type: 'line', source: 'rpghost', layout: lineLayout,
+      paint: { 'line-color': '#ffffff', 'line-opacity': 0.5, 'line-width': TW(1.2, 1.6, 2.2), 'line-dasharray': [1.6, 2.2] } });
     map.addLayer({ id: 'trail-glow', type: 'line', source: 'trail', layout: lineLayout,
       paint: { 'line-color': ['get', 'glow'], 'line-opacity': 0.32, 'line-blur': TW(3, 4, 5.5), 'line-width': TW(6, 8, 11) } });
     map.addLayer({ id: 'trail-case', type: 'line', source: 'trail', layout: lineLayout,
@@ -249,7 +255,7 @@
     if (ap.length) { S.apt = ap[0].properties; S.aptLL = ap[0].geometry.coordinates; select('apt', S.apt.code || S.apt.IDENT, false); return; }
     const lines = S.settings.airspace !== false ? avLines(e.point) : [];
     if (lines.length || CLOUDS.on) cloudAt(e.lngLat, lines.slice(0, 5)); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
-    if (S.sel) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
+    if (S.sel && !S.rp) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
   });
   // a one-finger drag takes over from Follow; two fingers (turn, tilt, pinch) keep following
   map.on('dragstart', e => {
@@ -262,6 +268,7 @@
   cv.addEventListener('touchend', e => { if (!e.touches.length) S.touching = false; }, { passive: true });
   cv.addEventListener('touchcancel', () => { S.touching = false; }, { passive: true });
   map.on('rotate', rotateMarkers);
+  map.on('pitch', rotateMarkers);
   // Switch 3D on/off only when a tilt has finished: changing terrain mid-animation cancelled the tilt
   // and left the map stuck nearly flat in "3D" (seen on the S24 screen recording).
   map.on('pitchend', () => { const on = map.getPitch() > 15; if (on !== S.mode3d) { S.mode3d = on; apply3d(); if (S.st) renderMap(); } });
@@ -436,7 +443,54 @@
     return (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
   }
   /** Icon direction: travel direction while moving (so the path leaves from the tail), nose direction while hovering. */
-  function iconHeading(d) { const c = courseOf(d); return c != null ? c : hdgOf(d); }
+  function iconHeading(d) { const o = orbitOf(d); if (o != null) return o; const c = courseOf(d); return c != null ? c : hdgOf(d); }
+  /** Circling something (an inspection orbit, a search drone getting a better angle): Remote ID sends only the direction of
+   *  travel, so the circle is found from the path and the nose points at its centre, as in DJI's point-of-interest orbit
+   *  (Jason 2026-11-11: "when it's orbiting the camera should always be facing the center of the orbit"). Returns degrees or null. */
+  const orbitCache = new Map();
+  function orbitOf(d) {
+    const tr = d.track;
+    if (!tr || tr.length < 8 || !hasPos(d) || !isLive(d) || (d.speed != null && d.speed < 0.8)) return null;
+    const key = tr.length + ':' + tr[tr.length - 1][0] + ':' + d.lat + ':' + d.lon, c = orbitCache.get(d.id);
+    if (c && c.key === key) return c.v;
+    const kx = 111320 * Math.cos(rad(d.lat));
+    let v = null;
+    for (const win of [90, 60, 45, 30]) {          // the longest recent stretch that is one clean circle
+      const P = [];
+      for (let i = tr.length - 1; i >= 0 && S.t - tr[i][0] <= win; i--) P.push([(tr[i][2] - d.lon) * kx, (tr[i][1] - d.lat) * M_LAT]);
+      if (P.length < 8) continue;
+      P.reverse();
+      let turn = 0, prev = null, last = P[0];
+      for (const q of P) {
+        const dx = q[0] - last[0], dy = q[1] - last[1];
+        if (Math.hypot(dx, dy) < 3) continue;
+        const a = Math.atan2(dx, dy);
+        if (prev != null) { let da = a - prev; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; turn += da; }
+        prev = a; last = q;
+      }
+      if (Math.abs(turn) < rad(120)) continue;
+      // least-squares circle: x^2 + y^2 = A x + B y + C
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+      const n = P.length;
+      for (const [x, y] of P) { const z = x * x + y * y; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z; sz += z; }
+      const det3 = (a, b, c2, d2, e, f, g, h, i) => a * (e * i - f * h) - b * (d2 * i - f * g) + c2 * (d2 * h - e * g);
+      const D = det3(sxx, sxy, sx, sxy, syy, sy, sx, sy, n);
+      if (Math.abs(D) < 1e-9) continue;
+      const A2 = det3(sxz, sxy, sx, syz, syy, sy, sz, sy, n) / D, B2 = det3(sxx, sxz, sx, sxy, syz, sy, sx, sz, n) / D;
+      const C2 = det3(sxx, sxy, sxz, sxy, syy, syz, sx, sy, sz) / D;
+      const cx = A2 / 2, cy = B2 / 2, r = Math.sqrt(Math.max(0, C2 + cx * cx + cy * cy));
+      if (!(r > 6 && r < 500)) continue;
+      let e2 = 0;
+      for (const [x, y] of P) { const e = Math.hypot(x - cx, y - cy) - r; e2 += e * e; }
+      if (Math.sqrt(e2 / n) > 0.15 * r) continue;
+      const here = Math.hypot(cx, cy);                // the drone (at 0,0) must still be on the circle
+      if (here < 0.75 * r || here > 1.25 * r) continue;
+      v = (Math.atan2(cx, cy) * 180 / Math.PI + 360) % 360;
+      break;
+    }
+    orbitCache.set(d.id, { key, v });
+    return v;
+  }
 
   // ---------- 3D flight path drawn on the GPU: a thin, smooth line at the drone's real height,
   // constant width in screen pixels, darker in the middle with a lighter edge, fading with age.
@@ -576,7 +630,7 @@
     for (const d of S.st.drones) {
       if (!hasPos(d) || S.t - d.lastSeen > SHOW_S) continue;
       const live = isLive(d), h = Math.max(0, d.height || 0);
-      drones.push(...droneModel(d, h, s, live));
+      // (the block model from droneModel() is no longer drawn: the detailed icon floats at the drone's height instead)
       // (the floating path is now drawn by PATH3D)
       if (h > 2) stalk.push(poly(box(d.lat, d.lon, w * 0.4, w * 0.4, 0), { base: 0, top: Math.max(h, 1), color: live ? '#ffb37a' : '#94a3b8' }));
       shadow.push(poly(ring(d.lat, d.lon, s * 0.55, 28), {}));
@@ -1244,9 +1298,15 @@
   });
 
   // ------------------------------------------------------------------ markers
+  // In 3D the drone is the same detailed icon as in 2D, laid back with the map's tilt so it reads as a drone seen from the side
+  // and above (Jason 2026-11-11: in 3D "the drones just look super generic and don't look as good as they do when you're in 2-D")
+  function droneXf(hd, b) {
+    const r = `rotate(${Math.round(((hd || 0) - b) * 10) / 10}deg)`;
+    return S.mode3d ? `perspective(380px) rotateX(${Math.round(Math.min(72, map.getPitch()))}deg) ${r}` : r;
+  }
   function rotateMarkers() {
     const b = map.getBearing();
-    for (const m of mk.drone.values()) if (m.hd != null) m.img.style.transform = `rotate(${m.hd - b}deg)`;
+    for (const m of mk.drone.values()) if (m.hd != null || S.mode3d) m.img.style.transform = droneXf(m.hd, b);
     for (const m of mk.ac.values()) if (m.hd != null) m.img.style.transform = `rotate(${m.hd - b}deg)`;
   }
 
@@ -1336,7 +1396,7 @@
       m.el.classList.toggle('flat', S.mode3d);
       m.el.style.zIndex = sel ? 5 : live ? 3 : 1;
       m.hd = iconHeading(d);
-      if (m.hd != null) m.img.style.transform = `rotate(${m.hd - b}deg)`;
+      if (m.hd != null || S.mode3d) m.img.style.transform = droneXf(m.hd, b);
       const tag = `<b>${esc(shortModel(d))}</b> · ${ft(d.height)} ft`;
       if (m.tag.innerHTML !== tag) m.tag.innerHTML = tag;
       m.el.style.setProperty('--dc', dcol(d));
@@ -1426,12 +1486,12 @@
   function sheetTop() { return sheet.getBoundingClientRect().top; }
   function stops() {
     const H = sheet.offsetHeight, vh = window.innerHeight;
-    return { mini: Math.max(0, H - miniH()), peek: Math.max(0, H - (S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
+    return { mini: Math.max(0, H - miniH()), peek: Math.max(0, H - (S.rp ? rpPeekH() : S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
   }
   // mini = just the handle and the header line ("Drones · 23.0 mi SE to pilot · 1 live")
   function miniH() {
-    const h = inner.querySelector(S.sel ? '.det-head' : '.sh-head');
-    return h ? Math.max(48, Math.round(h.getBoundingClientRect().bottom - sheet.getBoundingClientRect().top + 6)) : 66;
+    const h = inner.querySelector(S.rp ? '.rp-bar' : S.sel ? '.det-head' : '.sh-head');
+    return h ? Math.max(48, Math.round(h.getBoundingClientRect().bottom + inner.scrollTop - sheet.getBoundingClientRect().top + 6)) : 66;
   }
   const SHEET_ORDER = ['mini', 'peek', 'half', 'full'];
   // The part of the sheet slid below its resting edge is clipped off, so a closed sheet floats above
@@ -1483,7 +1543,11 @@
     const act = e.target.closest('[data-act]');
     if (act) { e.stopPropagation(); doAct(act.dataset.act); return; }
     const row = e.target.closest('.row[data-id]');
-    if (row) { select(row.dataset.kind, row.dataset.id, true); }
+    if (!row) return;
+    const k = row.dataset.kind;
+    if (k === 'flight') { const f = RPD.byId.get(row.dataset.id); if (f) startReplay(f, { kind: 'flights', sel: 'flights' }); }
+    else if (k === 'day') { const x = (RPD.days || []).find(y => y.day === row.dataset.id); if (x) rpLoadDay(x); }
+    else select(k, row.dataset.id, true);
   });
 
   function select(kind, id, fly) {
@@ -1498,13 +1562,21 @@
       if (kind === 'ac') { const a = (S.st.aircraft || []).find(x => x.hex === id); if (a) flyTo(a.lat, a.lon, 12); }
     }
   }
-  function deselect() { S.sel = null; S.kind = null; S.follow = false; S.view = ''; renderSheet(); if (S.mapReady) renderMap(); }
+  function deselect() { if (S.rp) return stopReplay(); S.sel = null; S.kind = null; S.follow = false; S.view = ''; renderSheet(); if (S.mapReady) renderMap(); }
 
   function selDrone() { return S.kind === 'drone' && S.st ? S.st.drones.find(x => x.id === S.sel) : null; }
   function doAct(a) {
     const d = selDrone();
     haptic();
     if (a === 'back') return deselect();
+    if (a === 'flights') return openFlights();
+    if (a === 'replay' && d) return replayDrone(d);
+    if (a === 'rpplay' && S.rp) {
+      const R = S.rp;
+      if (!R.playing && R.t >= R.f.t1 - 0.05) R.t = R.f.t0;        // at the end: play it again
+      R.playing = !R.playing; R.wall = performance.now(); R.dirty = true; return;
+    }
+    if (a === 'rpspeed' && S.rp) { const R = S.rp; R.speed = SPEEDS[(SPEEDS.indexOf(R.speed) + 1) % SPEEDS.length]; R.dirty = true; return; }
     if (a === 'drive' && d && hasPilot(d)) {
       if (A) A.navigate(d.pilotLat, d.pilotLon);
       else window.open(`https://www.google.com/maps/dir/?api=1&destination=${d.pilotLat},${d.pilotLon}&travelmode=driving`);
@@ -1540,7 +1612,7 @@
 
   // ---------- list view
   const LIST = `
-    <div class="sh-head"><div class="sh-title">Drones</div><div class="sh-sub"><span class="sh-near" data-f="near"></span><span data-f="count"></span></div></div>
+    <div class="sh-head"><div class="sh-title">Drones</div><button class="sh-hist" data-act="flights">${ICON.hist}<span>Past flights</span></button><div class="sh-sub"><span class="sh-near" data-f="near"></span><span data-f="count"></span></div></div>
     <div class="empty hidden" data-f="empty"><div class="radar"></div><div><div class="empty-title">Listening for Remote ID</div>
       <div class="empty-sub" data-f="emptysub">Drones show up here the moment the receiver hears them.</div></div></div>
     <div class="row hero-card hidden" data-f="hero" data-kind="drone">
@@ -1709,6 +1781,7 @@
     <div class="det-head"><button class="back" data-act="back" aria-label="Back">${ICON.back}</button>
       <div class="det-title"><div class="t1" data-f="model"></div><div class="t2"><span data-f="pill"></span><span class="mono" data-f="serial"></span></div></div>
       <div data-f="sig"></div></div>
+    ${S.rp ? rpBarHtml() : ''}
     <div class="hero">
       <div class="card hero-main"><div class="lbl">Height above takeoff</div><div class="val"><span data-f="h"></span><small>ft</small></div><div class="sub" data-f="climb"></div></div>
       <div class="card spark"><div class="lbl" data-f="sparklbl">Height, last 10 min</div><div data-f="spark"></div></div>
@@ -1731,6 +1804,7 @@
     <div class="actions">
       <button class="btn" data-act="follow" data-f="followbtn">${ICON.follow}Follow</button>
       <button class="btn" data-act="view3d">${ICON.cube}3D view</button>
+      ${S.rp ? '' : `<button class="btn" data-act="replay" style="grid-column:span 2">${ICON.hist}Replay this flight</button>`}
       <button class="btn" data-act="gmap" style="grid-column:span 2">${ICON.pin}Open drone in Google Maps</button>
     </div>
     <div class="meta" data-f="meta"></div>`;
@@ -1750,7 +1824,7 @@
     const live = isLive(d), p = me();
     inner.style.setProperty('--dc', dcol(d));
     setF(inner, 'model', esc(modelOf(d)));
-    setF(inner, 'pill', d.demo ? '<span class="pill demo">DEMO</span>' : live ? '<span class="pill live">LIVE</span>' : `<span class="pill lost">LOST · ${ago(S.t - d.lastSeen)}</span>`);
+    setF(inner, 'pill', d.replay ? `<span class="pill replay">REPLAY</span>${live ? '' : ' <span class="pill lost">NO SIGNAL</span>'}` : d.demo ? '<span class="pill demo">DEMO</span>' : live ? '<span class="pill live">LIVE</span>' : `<span class="pill lost">LOST · ${ago(S.t - d.lastSeen)}</span>`);
     setF(inner, 'serial', esc(d.serial || d.id));
     setF(inner, 'sig', sigBars(live ? d.rssi : null));
     setF(inner, 'h', ft(d.height));
@@ -1794,7 +1868,8 @@
     }
     const fb = inner.querySelector('[data-f="followbtn"]');
     fb.classList.toggle('on', S.follow);
-    const bits = [`<b>First seen</b> ${clock(d.firstSeen)}`, `<b>Last seen</b> ${ago(S.t - d.lastSeen)}`, `<b>${d.count.toLocaleString('en-US')}</b> messages`];
+    const bits = d.replay && S.rp ? [`<b>Flight</b> ${esc(dayLabel(S.rp.f.day || ''))} · ${clock(S.rp.f.t0)} – ${clock(S.rp.f.t1)}`, `<b>${d.count.toLocaleString('en-US')}</b> of ${S.rp.f.pts.length.toLocaleString('en-US')} messages`]
+      : [`<b>First seen</b> ${clock(d.firstSeen)}`, `<b>Last seen</b> ${ago(S.t - d.lastSeen)}`, `<b>${d.count.toLocaleString('en-US')}</b> messages`];
     if (d.freq) bits.push(`<b>${(d.freq / 1000).toFixed(3)}</b> GHz`);
     if (d.mac) bits.push(`<b>MAC</b> <span class="mono">${esc(d.mac)}</span>`);
     if (d.altGeo != null) bits.push(`<b>GPS alt</b> ${ft(d.altGeo)} ft`);
@@ -1852,17 +1927,19 @@
     if (S.kind === 'drone') { d = selDrone(); if (d) key = 'drone:' + d.id; }
     if (S.kind === 'ac') { a = (S.st.aircraft || []).find(x => x.hex === S.sel); if (a) key = 'ac:' + a.hex; }
     if (S.kind === 'apt' && S.apt) { ap = S.apt; key = 'apt:' + S.sel; }
+    if (S.kind === 'flights') key = 'flights';
     if (key === 'list' && S.sel) { S.sel = null; S.kind = null; }
     if (key !== S.view) {
-      inner.innerHTML = key === 'list' ? LIST : key.startsWith('drone') ? detailHtml() : key.startsWith('apt') ? aptHtml() : acHtml();
+      inner.innerHTML = key === 'list' ? LIST : key === 'flights' ? flightsHtml() : key.startsWith('drone') ? detailHtml() : key.startsWith('apt') ? aptHtml() : acHtml();
       S.view = key;
     }
-    if (d) renderDetail(d); else if (a) renderAc(a); else if (ap) renderApt(ap); else renderList();
+    if (key === 'flights') rpList(); else if (d) renderDetail(d); else if (a) renderAc(a); else if (ap) renderApt(ap); else renderList();
+    if (S.rp) rpBar();   // a rebuilt card gets its timeline filled straight away, also while paused
   }
 
   // ------------------------------------------------------------------ status + banner
   function renderStatus() {
-    const st = S.st, u = st.usb || {};
+    const st = S.rp && S.liveSt ? S.liveSt : S.st, u = st.usb || {};
     const nLive = st.drones.filter(isLive).length, nAc = S.settings.aircraft ? (st.aircraft || []).filter(a => !a.ground).length : 0;
     let cls, txt;
     if (st.demo) { cls = 'demo'; txt = ''; }   // the DEMO chip already says it
@@ -1979,10 +2056,325 @@
     else toast('No drones to show yet', 1600);
   });
 
+  // ------------------------------------------------------------------ flight replay
+  // Jason 2026-11-11: "It is also going to be vital that we can replay the whole flight". The phone saves every Remote ID message
+  // (logs/YYYY-MM-DD.jsonl, served to this page at /logs/ by the app). Flights are cut out of those logs here and played back
+  // through the normal map, trail, 3D view and drone card, with a timeline you can drag. The iPhone page and the demo replay the
+  // demo flights. A flight ends at a gap of 90 s with no signal, or a stop on the ground longer than a minute (a battery swap).
+  const RP_GAP = 90, RP_GROUND = 60, SPEEDS = [1, 2, 5, 10, 30, 60];
+  function parseFlights(txt) {
+    const num = v => typeof v === 'number' ? (isFinite(v) ? v : null) : typeof v === 'string' && v.trim() !== '' && isFinite(+v) ? +v : null;
+    const str = (u, k) => u[k] == null ? null : (String(u[k]).trim() || null);
+    const ll = (a, b) => a == null || b == null || (Math.abs(a) < 1e-6 && Math.abs(b) < 1e-6) || Math.abs(a) > 90 || Math.abs(b) > 180 ? null : [a, b];
+    const open = new Map(), sessions = [];
+    for (const ln of txt.split('\n')) {
+      if (ln.length < 30 || ln.indexOf('uav') < 0) continue;      // heartbeats and half-written lines
+      let o, m;
+      try { o = JSON.parse(ln); m = JSON.parse(o.line); } catch (e) { continue; }
+      const t = Date.parse(o.t) / 1000;                            // the phone's local time, as the log was written
+      if (!isFinite(t) || !m || !m.uav) continue;
+      for (const u of Array.isArray(m.uav) ? m.uav : [m.uav]) {
+        if (!u || typeof u !== 'object') continue;
+        const id = ['serial', 'o4_id', 'MAC', 'ssid', 'device'].map(k => str(u, k)).find(Boolean) || 'unknown';   // as the app names drones
+        const h0 = num(u.Height_AGL), up = h0 != null && h0 > -1000 && h0 >= 1.5;
+        let s = open.get(id);
+        // a new flight after 90 s of silence, unless it was in the air on both sides of the gap (signal lost mid-flight, up to 20 min)
+        if (!s || (t - s.last > RP_GAP && !(s.up && up && t - s.last < 1200))) { s = { id, pts: [], pil: [], last: t, meta: {} }; open.set(id, s); sessions.push(s); }
+        s.last = t; s.up = up;
+        for (const k of ['serial', 'model', 'MAC']) { const v = str(u, k); if (v) s.meta[k] = v; }
+        const fq = num(u.freq); if (fq != null) s.meta.freq = fq;
+        const pl = ll(num(u.pilot_lat), num(u.pilot_lon));
+        if (pl) { const q = s.pil[s.pil.length - 1]; if (!q || q[1] !== pl[0] || q[2] !== pl[1]) s.pil.push([t, pl[0], pl[1]]); }
+        const p = ll(num(u.lat), num(u.lon));
+        if (!p) continue;
+        const h = num(u.Height_AGL), g = num(u.AltitudeG), vs = num(u.Vspeed != null ? u.Vspeed : u.UpV), sp = num(u.speed), hd = num(u.direc);
+        // [t, lat, lon, height above takeoff, ellipsoid altitude, speed, climb, course, signal]
+        s.pts.push([t, p[0], p[1], h != null && h > -1000 ? h : null, g != null && g > -1000 ? g : null,
+          sp != null && sp >= 0 && sp <= 150 ? sp : null, vs != null && vs > -50 ? vs : null, hd != null && hd >= 0 && hd < 361 ? hd : null, num(u.rssi)]);
+      }
+    }
+    const out = [];
+    for (const s of sessions) {
+      const P = s.pts;
+      if (P.length < 5) continue;
+      const hasH = P.some(p => p[3] != null);
+      const air = P.map(p => hasH ? p[3] != null && p[3] >= 1.5 : (p[5] || 0) >= 1);   // carried along the ground is not flying
+      const cut = (a, b) => {
+        if (a < 0 || P[b][0] - P[a][0] < 10) return;               // a hop of a few seconds is not a flight
+        let i = a, j = b;
+        while (i > 0 && P[a][0] - P[i - 1][0] <= 15) i--;          // keep 15 s on the ground before take-off
+        while (j < P.length - 1 && P[j + 1][0] - P[b][0] <= 15) j++;   // and after landing
+        out.push(mkFlight(s, P.slice(i, j + 1)));
+      };
+      let a = -1, b = -1;
+      for (let k = 0; k < P.length; k++) {
+        if (!air[k]) continue;
+        if (a >= 0 && P[k][0] - P[b][0] > RP_GROUND) { cut(a, b); a = -1; }
+        if (a < 0) a = k;
+        b = k;
+      }
+      cut(a, b);
+    }
+    return out;
+  }
+  function mkFlight(s, P) {
+    const t0 = P[0][0], t1 = P[P.length - 1][0];
+    let distM = 0, last = P[0], maxH = 0, top = 0;
+    for (const p of P) {
+      const dm = dist(last[1], last[2], p[1], p[2]);
+      if (dm > 3) { if (dm / Math.max(0.5, p[0] - last[0]) < 45) distM += dm; last = p; }
+      if (p[3] != null) maxH = Math.max(maxH, p[3]);
+      if (p[5] != null && p[5] < 45) top = Math.max(top, p[5]);
+    }
+    const pil = s.pil.filter(q => q[0] <= t1);
+    return { id: s.id + '@' + Math.round(t0), droneId: s.id, serial: s.meta.serial, model: s.meta.model, mac: s.meta.MAC, freq: s.meta.freq,
+      t0, t1, pts: P, pil: pil.length ? pil : s.pil.slice(0, 1), maxH, distM, top };
+  }
+
+  // ---------- the list of saved flights
+  const RPD = { days: null, err: '', byId: new Map() };
+  const rpClock = t => new Date(t * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  const rpDur = s => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+  const rpMin = s => s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h';
+  function dayLabel(day) {
+    if (day === 'demo') return 'Demo flights';
+    const d = new Date(day + 'T12:00:00'), now = new Date(), y = new Date(now.getTime() - 864e5);
+    const md = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    if (d.toDateString() === now.toDateString()) return 'Today · ' + md;
+    if (d.toDateString() === y.toDateString()) return 'Yesterday · ' + md;
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  async function rpIndex() {
+    const days = [];
+    RPD.err = '';
+    if (A) {
+      try {
+        const r = await fetch('/logs/index.json', { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        for (const x of await r.json()) days.push({ day: x.day, size: x.size, src: '/logs/' + x.day + '.jsonl' });
+      } catch (e) { RPD.err = 'This app version cannot open its saved flights. Install the latest update in Settings.'; }
+      if (S.settings.demo) days.push({ day: 'demo', src: '/assets/demo.jsonl' });
+    } else days.push({ day: 'demo', src: '../demo.jsonl' });
+    const old = new Map((RPD.days || []).map(x => [x.day, x]));   // keep days already read that have not grown since
+    RPD.days = days.map(x => { const o = old.get(x.day); return o && o.flights && o.size === x.size ? o : x; });
+  }
+  async function rpLoadDay(x) {
+    if (x.flights || x.loading) return x.flights || [];
+    x.loading = true; rpList();
+    try {
+      const r = await fetch(x.src, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      x.flights = parseFlights(await r.text()).sort((a, b) => b.t0 - a.t0);
+      for (const f of x.flights) { f.day = x.day; RPD.byId.set(f.id, f); }
+    } catch (e) { x.flights = []; x.err = true; log('REPLAY', 'could not read ' + x.day + ': ' + e.message); }
+    x.loading = false; rpList();
+    return x.flights;
+  }
+  async function openFlights() {
+    if (S.rp) stopReplay(true);
+    S.kind = 'flights'; S.sel = 'flights'; S.view = '';
+    if (S.sheet === 'peek' || S.sheet === 'mini') setSheet('half');
+    inner.scrollTop = 0;
+    renderSheet();
+    await rpIndex();
+    rpList();
+    const auto = RPD.days.filter(x => x.day !== 'demo').slice(0, 2).concat(RPD.days.filter(x => x.day === 'demo'));
+    for (const x of auto) await rpLoadDay(x);   // the newest two days (and the demo) right away; older days on a tap
+  }
+  function flightsHtml() {
+    return `
+    <div class="det-head"><button class="back" data-act="back" aria-label="Back">${ICON.back}</button>
+      <div class="det-title"><div class="t1">Past flights</div><div class="t2">Tap a flight to replay it</div></div></div>
+    <div data-f="flist"></div>
+    <div class="meta" style="margin-top:14px">${A ? 'Every drone the receiver hears is saved on this phone, so its flight can be replayed after it ends. ' +
+      'A flight ends at a landing or after 90 s with no signal.' : 'This web page has no receiver, so only the demo flights can be replayed here.'}</div>`;
+  }
+  function rpRow(f) {
+    const c = CMAP[f.droneId];
+    return `<div class="row rp-row" data-kind="flight" data-id="${esc(f.id)}" style="--dc:${PAL[c == null ? 0 : c]}">
+      <div class="r-icon">${DRONE_SVG}</div>
+      <div class="r-main"><div class="r-title"><span>${esc(modelOf(f))}</span></div>
+        <div class="rp-sub">${clock(f.t0)} – ${clock(f.t1)} · ${rpMin(f.t1 - f.t0)}</div>
+        <div class="rp-sub2">Up to ${ft(f.maxH)} ft · ${fmtDist(f.distM)} flown${f.top ? ` · ${mph(f.top)} mph top` : ''}</div></div>
+      <span class="rp-go">${ICON.play}</span></div>`;
+  }
+  function rpList() {
+    if (S.view !== 'flights') return;
+    const box = inner.querySelector('[data-f="flist"]'); if (!box) return;
+    let h = RPD.err ? `<div class="rp-note">${esc(RPD.err)}</div>` : '';
+    if (!RPD.days) h += '<div class="rp-note">Looking for saved flights…</div>';
+    else if (!RPD.days.length) h += '<div class="rp-note">No saved flights yet. Flights show up here once the receiver has heard a drone.</div>';
+    else for (const x of RPD.days) {
+      h += `<div class="sh-section">${esc(dayLabel(x.day))}</div>`;
+      if (x.loading) h += `<div class="rp-note">Reading ${x.size ? (x.size / 1e6).toFixed(1) + ' MB of ' : ''}saved signals…</div>`;
+      else if (!x.flights) h += `<div class="row rp-day" data-kind="day" data-id="${esc(x.day)}"><div class="r-main"><div class="r-title">Look for flights</div>
+        <div class="rp-sub">${(x.size / 1e6).toFixed(1)} MB of saved signals · tap to read</div></div><span class="rp-go">›</span></div>`;
+      else if (!x.flights.length) h += `<div class="rp-note">${x.err ? 'Could not read this day.' : 'No flights this day (drones were heard only on the ground).'}</div>`;
+      else for (const f of x.flights) h += rpRow(f);
+    }
+    if (box.innerHTML !== h) box.innerHTML = h;
+  }
+
+  // ---------- the player
+  function rpSample(f, t) {   // index of the last message at or before t, and how far toward the next one (no gliding over gaps)
+    const P = f.pts;
+    let lo = 0, hi = P.length - 1;
+    if (t <= P[0][0]) return { i: 0, k: 0 };
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (P[mid][0] <= t) lo = mid; else hi = mid - 1; }
+    const a = P[lo], b = P[lo + 1], dt = b ? b[0] - a[0] : 0;
+    return { i: lo, k: b && dt > 0 && dt <= LIVE_S ? Math.min(1, (t - a[0]) / dt) : 0 };
+  }
+  function rpDrone(t) {   // the drone as the live screens would have seen it at time t
+    const R = S.rp, f = R.f, P = f.pts, { i, k } = rpSample(f, t), a = P[i], b = P[i + 1] || a;
+    const mix = (x, y) => x == null ? null : y == null ? x : x + (y - x) * k;
+    const lat = mix(a[1], b[1]), lon = mix(a[2], b[2]), h = mix(a[3], b[3]), g = mix(a[4], b[4]), msl = g == null ? null : g - R.N;
+    if (R.ti !== i) {   // the path flown so far, in the live format [t, lat, lon, height, sea level]
+      if (R.trk.length > i + 1) R.trk.length = i + 1;
+      for (let j = R.trk.length; j <= i; j++) { const p = P[j]; R.trk.push([p[0], p[1], p[2], p[3], p[4] == null ? null : p[4] - R.N]); }
+      R.ti = i; R.hd = null;
+      for (let j = i; j >= 0 && j > i - 300; j--) if (P[j][7] != null) { R.hd = P[j][7]; break; }
+    }
+    const track = R.trk.slice();
+    if (k > 0) track.push([t, lat, lon, h, msl]);
+    let pl = f.pil[0];
+    for (const q of f.pil) { if (q[0] <= t) pl = q; else break; }
+    return { id: R.id, serial: f.serial, model: f.model, mac: f.mac, freq: f.freq, lat, lon, height: h, altGeo: g, altMsl: msl,
+      speed: a[5], vspeed: a[6], heading: a[7], lastHeading: R.hd, rssi: a[8], pilotLat: pl ? pl[1] : null, pilotLon: pl ? pl[2] : null,
+      firstSeen: f.t0, lastSeen: k > 0 ? t : a[0], count: i + 1, demo: false, replay: true, track };
+  }
+  function startReplay(f, from) {
+    if (!S.mapReady || !f || !f.pts.length) return;
+    if (S.rp) stopReplay(true);
+    if (!f.day) { const d0 = new Date(f.t0 * 1000); f.day = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, '0')}-${String(d0.getDate()).padStart(2, '0')}`; }
+    const p0 = f.pts[0];
+    let N = NaN;
+    try { if (A && A.geoid) N = Number(A.geoid(p0[1], p0[2])); } catch (e) { }
+    if (!isFinite(N)) N = -33.5;                                   // the app's northeast-Ohio fallback (and the iPhone page)
+    const dur = f.t1 - f.t0;
+    S.liveSt = S.st;                                               // the live picture keeps arriving while the replay runs
+    S.rp = { f, id: 'rp:' + f.id, t: f.t0, playing: true, speed: dur > 1200 ? 30 : dur > 300 ? 10 : 5, N, trk: [], ti: -1, hd: null,
+      from: from || { kind: S.kind, sel: S.sel }, wall: performance.now(), lastMap: 0, lastSheet: 0, dirty: true, raf: 0, scrub: false };
+    CMAP[S.rp.id] = CMAP[f.droneId] != null ? CMAP[f.droneId] : 0;
+    // the whole flight, faint and dashed underneath, so you can see where it goes next
+    const sp = smoothPath({ id: 'rp-ghost', track: f.pts.map(p => [p[0], p[1], p[2], p[3], null]) });
+    smoothCache.delete('rp-ghost');
+    map.getSource('rpghost').setData(sp ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: sp.coords } } : EMPTY);
+    S.kind = 'drone'; S.sel = S.rp.id; S.follow = false; S.view = '';
+    if (cloudPop) { cloudPop.remove(); cloudPop = null; }
+    inner.scrollTop = 0;
+    rpRender(true);
+    setSheet('peek');
+    const pts = f.pts.map(p => [p[2], p[1]]).concat(f.pil.map(q => [q[2], q[1]]));
+    const bb = pts.reduce((b, q) => [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])], [180, 90, -180, -90]);
+    map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad(), maxZoom: 17, duration: 900 });
+    S.rp.raf = requestAnimationFrame(rpTick);
+    haptic();
+  }
+  function stopReplay(quiet) {
+    const R = S.rp; if (!R) return;
+    cancelAnimationFrame(R.raf);
+    S.rp = null;
+    map.getSource('rpghost').setData(EMPTY);
+    smoothCache.delete(R.id); delete CMAP[R.id];
+    if (S.liveSt) { S.st = S.liveSt; S.t = S.st.t; }
+    S.follow = false; S.view = '';
+    if (quiet) return;
+    const fr = R.from;
+    if (fr.kind === 'flights') { S.kind = 'flights'; S.sel = 'flights'; }
+    else if (fr.kind === 'drone' && S.st.drones.some(x => x.id === fr.sel)) { S.kind = 'drone'; S.sel = fr.sel; }
+    else { S.kind = null; S.sel = null; }
+    renderStatus(); renderSheet(); renderMap();
+  }
+  function rpTick(now) {
+    const R = S.rp; if (!R) return;
+    const dt = Math.min(0.25, Math.max(0, (now - R.wall) / 1000)); R.wall = now;
+    if (R.playing && !R.scrub) {
+      R.t += dt * R.speed;
+      if (R.t >= R.f.t1) { R.t = R.f.t1; R.playing = false; }
+      R.dirty = true;
+    }
+    if (R.dirty && now - R.lastMap >= 66) rpRender(now - R.lastSheet >= (R.playing ? 250 : 120));   // map ~15 times a second
+    else if (R.sheetDirty && now - R.lastSheet >= 120) { R.sheetDirty = false; R.lastSheet = now; renderSheet(); }   // catch up the card
+    R.raf = requestAnimationFrame(rpTick);
+  }
+  function rpRender(sheetToo) {
+    const R = S.rp; if (!R) return;
+    R.dirty = false; R.lastMap = performance.now();
+    const d = rpDrone(R.t), L = S.liveSt || {};
+    S.st = { t: R.t, demo: L.demo, usb: L.usb, me: L.me, drones: [d], aircraft: [], settings: L.settings };
+    S.t = R.t;
+    if (S.mapReady) renderMap();
+    if (S.follow && !S.touching && !map.isMoving() && hasPos(d))
+      map.easeTo({ center: [d.lon, d.lat], duration: 0, padding: pad(), offset: liftOffset(d, map.getPitch(), map.getZoom()) });
+    if (sheetToo) { R.lastSheet = R.lastMap; R.sheetDirty = false; renderSheet(); } else R.sheetDirty = true;
+    rpBar();
+  }
+  function rpProfile(f, cls) {   // height over the whole flight, behind the timeline
+    const P = f.pts, t0 = f.t0, dur = Math.max(1, f.t1 - t0), W = 300, H = 38, hmax = Math.max(10, f.maxH) * 1.12;
+    const step = Math.max(1, Math.floor(P.length / 300));
+    let d = '';
+    for (let i = 0; i < P.length; i += step) {
+      const p = P[i];
+      d += (d ? ' L' : 'M') + ((p[0] - t0) / dur * W).toFixed(1) + ',' + (H - 2 - Math.max(0, p[3] || 0) / hmax * (H - 8)).toFixed(1);
+    }
+    return `<svg class="${cls}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path class="ar" d="${d} L${W},${H} L0,${H} Z"/><path class="ln" d="${d}"/></svg>`;
+  }
+  function rpBarHtml() {
+    const f = S.rp.f, dur = Math.max(1, f.t1 - f.t0);
+    return `<div class="rp-bar">
+      <button class="rp-play" data-act="rpplay" data-f="rpplay" aria-label="Play or pause"></button>
+      <div class="rp-mid">
+        <div class="rp-track">${rpProfile(f, 'rp-p0')}<div class="rp-done">${rpProfile(f, 'rp-p1')}</div>
+          <input class="rp-range" type="range" min="0" max="${dur.toFixed(1)}" step="0.1" value="0" aria-label="Replay position"></div>
+        <div class="rp-times"><span data-f="rpclock"></span><span data-f="rppos"></span></div>
+      </div>
+      <button class="rp-speed" data-act="rpspeed" data-f="rpspeed" aria-label="Replay speed"></button>
+    </div>`;
+  }
+  function rpBar() {
+    const R = S.rp, bar = inner.querySelector('.rp-bar'); if (!R || !bar) return;
+    const f = R.f, dur = Math.max(1, f.t1 - f.t0), pos = Math.min(dur, R.t - f.t0);
+    const rng = bar.querySelector('.rp-range');
+    if (!R.scrub && Math.abs(+rng.value - pos) > 0.05) rng.value = pos.toFixed(1);
+    bar.style.setProperty('--rp', (pos / dur * 100).toFixed(2) + '%');
+    const end = !R.playing && R.t >= f.t1 - 0.05;
+    setF(bar, 'rpplay', R.playing ? ICON.pause : end ? ICON.hist : ICON.play);
+    setF(bar, 'rpclock', esc(rpClock(R.t)));
+    setF(bar, 'rppos', `${rpDur(pos)} / ${rpDur(dur)}`);
+    setF(bar, 'rpspeed', R.speed + '×');
+  }
+  function rpPeekH() {   // closed sheet while replaying: the controls and the height card
+    const h = inner.querySelector('.hero');
+    return h ? Math.max(150, Math.min(380, Math.round(h.getBoundingClientRect().bottom + inner.scrollTop - sheet.getBoundingClientRect().top + 12))) : 240;
+  }
+  async function replayDrone(d) {   // "Replay this flight" on a drone's card: its latest flight in the saved log
+    toast('Finding this flight…', 1500);
+    await rpIndex();
+    const days = d.demo ? RPD.days.filter(x => x.day === 'demo') : RPD.days.filter(x => x.day !== 'demo').slice(0, 2);
+    let best = null;
+    for (const x of days) for (const f of await rpLoadDay(x)) if (f.droneId === d.id && (!best || Math.abs(f.t1 - d.lastSeen) < Math.abs(best.t1 - d.lastSeen))) best = f;
+    if (best) startReplay(best, { kind: 'drone', sel: d.id });
+    else toast(RPD.err || 'No saved flight for this drone yet', 3000);
+  }
+  inner.addEventListener('input', e => {
+    const R = S.rp; if (!R || !e.target.classList.contains('rp-range')) return;
+    R.scrub = true; R.t = R.f.t0 + +e.target.value; R.dirty = true;
+  });
+  const endScrub = e => { if (S.rp && e.target.classList && e.target.classList.contains('rp-range')) { S.rp.scrub = false; S.rp.wall = performance.now(); } };
+  inner.addEventListener('change', endScrub);
+  inner.addEventListener('pointerup', endScrub, true);
+  inner.addEventListener('touchend', endScrub, true);
+  window.RIDrp = { parse: parseFlights, start: f => startReplay(f, null), stop: () => stopReplay(), state: () => S.rp };   // for debugging over USB
+
   // ------------------------------------------------------------------ entry points from Android
   window.RID = {
     onState(st) {
       if (!st || !st.drones) return;
+      if (S.rp) {   // replaying: keep the live picture for when the replay ends; the replay draws the map and card
+        S.liveSt = st; assignColors(st.drones);
+        if (st.settings) { const lab = S.settings.labels; Object.assign(S.settings, st.settings); if (lab !== S.settings.labels) applyLabels(); }
+        renderStatus(); return;
+      }
       S.st = st; S.t = st.t;
       assignColors(st.drones);
       if (st.settings) {
@@ -2014,7 +2406,7 @@
       document.documentElement.style.setProperty('--safe-bottom', b + 'px');
       setSheet(S.sheet);
     },
-    select(id) { select('drone', id, true); },
+    select(id) { if (S.rp) stopReplay(true); select('drone', id, true); },
     back() {
       if (!modal.classList.contains('hidden')) { modal.classList.add('hidden'); return true; }
       if (!imgModal.classList.contains('hidden')) { imgModal.classList.add('hidden'); return true; }

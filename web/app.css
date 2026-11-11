@@ -755,3 +755,46 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 /* clouds on/off (2026-11-11): the time chip is tappable, its ✕ turns the clouds off */
 .cloud-time { pointer-events: auto; cursor: pointer; display: flex; align-items: center; }
 .cloud-time .ct-x { margin-left: 8px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, .25); font-size: 11px; opacity: .85; }
+
+/* ---------- flight replay (2026-11-11) */
+.sh-hist { align-self: center; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; margin: 0 8px 0 auto;
+  border-radius: 999px; font-size: 12.5px; font-weight: 700; background: rgba(255, 255, 255, .07); border: 1px solid var(--line2); color: var(--text); }
+.sh-hist svg { width: 16px; height: 16px; }
+.sh-hist:active { transform: scale(.96); }
+#sheet.is-mini .sh-hist span { display: none; }
+#sheet.is-mini .sh-hist { padding: 0 8px; }
+.pill.replay { color: #e0f2fe; background: rgba(56, 189, 248, .3); }
+.rp-bar { display: flex; align-items: center; gap: 10px; margin: -2px 0 14px; }
+.rp-play { flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; color: #061018;
+  background: var(--dc, #22d3ee); box-shadow: 0 6px 18px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .5); }
+.rp-play svg { width: 22px; height: 22px; }
+.rp-play:active { transform: scale(.94); }
+.rp-mid { flex: 1; min-width: 0; }
+.rp-track { position: relative; height: 40px; border-radius: 11px; overflow: hidden; background: rgba(255, 255, 255, .05); border: 1px solid var(--line); }
+.rp-track svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rp-p0 .ar { fill: rgba(255, 255, 255, .07); }
+.rp-p0 .ln { fill: none; stroke: rgba(255, 255, 255, .32); stroke-width: 1.4; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.rp-done { position: absolute; inset: 0; -webkit-clip-path: inset(0 calc(100% - var(--rp, 0%)) 0 0); clip-path: inset(0 calc(100% - var(--rp, 0%)) 0 0); }
+.rp-p1 .ar { fill: color-mix(in srgb, var(--dc, #22d3ee) 32%, transparent); }
+.rp-p1 .ln { fill: none; stroke: var(--dc, #22d3ee); stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.rp-range { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; background: transparent; -webkit-appearance: none; appearance: none; touch-action: none; cursor: pointer; }
+.rp-range::-webkit-slider-runnable-track { height: 100%; background: transparent; border: 0; }
+.rp-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 4px; height: 40px; border-radius: 2px; background: #fff;
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .45), 0 0 10px rgba(255, 255, 255, .55); }
+.rp-range::-moz-range-track { height: 100%; background: transparent; border: 0; }
+.rp-range::-moz-range-thumb { width: 4px; height: 40px; border: 0; border-radius: 2px; background: #fff; }
+.rp-times { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rp-times span:first-child { color: var(--text); font-weight: 650; }
+.rp-speed { flex: none; min-width: 54px; height: 40px; padding: 0 10px; border-radius: 12px; font-weight: 800; font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, .07); border: 1px solid var(--line2); color: var(--text); }
+.rp-speed:active { transform: scale(.95); }
+.rp-sub, .rp-sub2 { font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-sub { color: var(--text); opacity: .85; }
+.rp-go { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: var(--dc, #cbd5e1); background: rgba(255, 255, 255, .06); font-size: 20px; }
+.rp-go svg { width: 16px; height: 16px; }
+.rp-note { color: var(--muted); font-size: 13px; line-height: 1.5; padding: 6px 4px 10px; }
+
+/* 3D (2026-11-11): the detailed drone icon floats at the drone's height, tilted with the map (the block model is gone) */
+.m-drone.flat .dwrap { display: block; transition: none; transform-origin: 50% 50%; filter: drop-shadow(0 10px 8px rgba(0, 0, 0, .55)); }
+.m-drone.flat .ring { display: none; }
+.m-drone.flat .tag { bottom: 50%; transform: translate(-50%, -26px); }
