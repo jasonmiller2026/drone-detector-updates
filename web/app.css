@@ -697,3 +697,36 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 .wind-sub { font-size: 11px; margin-top: 2px; }
 .wind-sky { display: inline-flex; margin-left: 6px; align-self: center; }
 .wind-sky svg { width: 18px; height: 18px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+
+/* v0.2.7 scrolling panels (Settings, map layers, report): the glass rim and sheen are drawn on the panel itself, so they stay put
+   instead of sliding with the rows (Jason: "a small line right below road and place names ... scrolls up and down with that screen") */
+.modal-card::before, .modal-card::after { display: none; }
+.modal-card.glass-solid {
+  background: radial-gradient(130% 40% at 18% -6%, rgba(255,255,255,calc(.20 * var(--gsh))), rgba(255,255,255,0) 58%),
+    linear-gradient(170deg, rgba(255,255,255,calc(.12 * var(--gsh))), rgba(255,255,255,calc(.03 * var(--gsh))) 30%), rgba(var(--gt), var(--gs));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.16), inset 0 1.2px .5px rgba(255,255,255,.5), 0 14px 34px rgba(0,0,0,.38), 0 2px 6px rgba(0,0,0,.25); }
+[data-theme="light"] .modal-card.glass-solid { box-shadow: inset 0 0 0 1px rgba(255,255,255,.35), inset 0 1px 0 rgba(255,255,255,.7), 0 10px 30px rgba(0,0,0,.22); }
+
+/* v0.2.7 close button on the tap card */
+.cloud-pop .maplibregl-popup-content { padding-right: 40px; min-height: 30px; }
+.cp-x { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  display: grid; place-items: center; font: 600 13px/1 Inter, system-ui, sans-serif; color: var(--text);
+  background: rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+.cp-x::before { content: ""; position: absolute; inset: -8px; }   /* bigger finger target than it looks */
+[data-theme="light"] .cp-x { background: rgba(15,23,42,.08); box-shadow: none; }
+
+/* v0.2.7 cloud-pop pin: a dot on the ground and a thin stem to the card, so you see exactly which spot it is about (like Windy).
+   The card floats over the side buttons so its X is never hidden. */
+.cloud-pop { z-index: 10; }
+.cloud-pop::before, .cloud-pop::after { content: ""; position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; }
+.cloud-pop::before { width: 3px; height: 50px; border-radius: 1.5px;
+  background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.6)); box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 0 6px rgba(0,0,0,.35); }
+.cloud-pop::after { width: 12px; height: 12px; border-radius: 50%; background: #fff;
+  box-shadow: 0 0 0 2.5px rgba(14,165,233,.95), 0 0 0 5px rgba(255,255,255,.35), 0 2px 6px rgba(0,0,0,.5); }
+.cloud-pop[class*="anchor-bottom"]::before { bottom: -52px; }
+.cloud-pop[class*="anchor-bottom"]::after { bottom: -58px; }
+.cloud-pop[class*="anchor-top"]::before { top: -52px; }
+.cloud-pop[class*="anchor-top"]::after { top: -58px; }
+.cloud-pop[class*="-left"]::before, .cloud-pop[class*="-left"]::after { left: 24px; }
+.cloud-pop[class*="-right"]::before, .cloud-pop[class*="-right"]::after { left: calc(100% - 24px); }
+[data-theme="light"] .cloud-pop::before { background: linear-gradient(180deg, rgba(15,23,42,.75), rgba(15,23,42,.45)); box-shadow: 0 0 0 1px rgba(255,255,255,.5); }

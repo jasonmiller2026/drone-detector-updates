@@ -842,37 +842,45 @@
     return `Class ${p.CLASS}${p.IDENT ? ' (' + p.IDENT + ')' : ''} · ${hi ? lo + ' to ' + hi : 'from ' + lo}`;
   }
   function faaQuery(svc, where, fields, b, extra) {
+    const sig = AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined;   // a stuck request on weak LTE gives up and retries
     return fetch(`${FAA}${svc}/FeatureServer/0/query?where=${encodeURIComponent(where)}&geometry=${b.join(',')}` +
-      `&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${fields}&outSR=4326${extra || ''}&f=geojson`)
+      `&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${fields}&outSR=4326${extra || ''}&f=geojson`, { signal: sig })
       .then(r => r.json());
   }
   async function loadAviation(force) {
     if (!S.mapReady) return;
-    const on = S.settings.airspace !== false, z = map.getZoom();
+    // zoom 7+: everything (class E, private strips, heliports, stadiums); zoom 5-7: an overview (class B/C/D, special use,
+    // no-fly zones, public airports) so a zoomed-out map is covered everywhere instead of showing one leftover patch; below 5: hidden
+    const on = S.settings.airspace !== false, z = map.getZoom(), show = on && z >= 5;
     const vis = (id, v) => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v ? 'visible' : 'none'); };
-    for (const id of AV_LAYERS) vis(id, on && (!id.startsWith('stad') || AVX.stadiums));
+    for (const id of AV_LAYERS) vis(id, show && (!id.startsWith('stad') || AVX.stadiums));
     for (const id of LAANC_LAYERS) vis(id, on && AVX.laanc);
     if (on && AVX.laanc) loadLaanc(force);
-    if (!on || z < 7 || AV.busy) return;
+    if (!show) return;
+    if (AV.busy) { AV.again = true; return; }   // looked at again as soon as the running load finishes
+    const level = z >= 7 ? 'detail' : 'overview', det = level === 'detail';
     const bb = map.getBounds(), w = bb.getWest(), s = bb.getSouth(), e = bb.getEast(), n = bb.getNorth();
-    if (!force && AV.box && w >= AV.box[0] && s >= AV.box[1] && e <= AV.box[2] && n <= AV.box[3]) return;
-    const dx = Math.max(0.15, (e - w) * 0.6), dy = Math.max(0.12, (n - s) * 0.6);
+    if (!force && AV.box && w >= AV.box[0] && s >= AV.box[1] && e <= AV.box[2] && n <= AV.box[3] && (AV.level === level || AV.level === 'detail')) return;
+    const wait = AV.failAt ? 15000 - (Date.now() - AV.failAt) : 0;
+    if (!force && wait > 0) { clearTimeout(AV.retry); AV.retry = setTimeout(() => loadAviation(false), wait); return; }
+    const m = det ? 0.6 : 0.3, dx = Math.max(0.15, (e - w) * m), dy = Math.max(0.12, (n - s) * m);
     const box = [w - dx, s - dy, e + dx, n + dy].map(v => +v.toFixed(3));
-    AV.busy = true;
+    AV.busy = true; AV.again = false;
     try {
-      const simp = '&maxAllowableOffset=0.0002', ok = r => r.status === 'fulfilled' && r.value && r.value.features ? r.value : { features: [] };
+      const simp = `&maxAllowableOffset=${det ? 0.0002 : 0.003}`, ok = r => r.status === 'fulfilled' && r.value && r.value.features ? r.value : { features: [] };
       const res = await Promise.allSettled([
-        faaQuery('Class_Airspace', "CLASS IN ('B','C','D','E')", 'NAME,CLASS,LOCAL_TYPE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,IDENT', box, simp),
-        faaQuery('US_Airport', '1=1', 'IDENT,NAME,TYPE_CODE,PRIVATEUSE,ICAO_ID,ELEVATION,SERVCITY,STATE', box, ''),
+        faaQuery('Class_Airspace', det ? "CLASS IN ('B','C','D','E')" : "CLASS IN ('B','C','D')", 'NAME,CLASS,LOCAL_TYPE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,IDENT', box, simp),
+        faaQuery('US_Airport', det ? '1=1' : "PRIVATEUSE=0 AND TYPE_CODE='AD' AND ICAO_ID IS NOT NULL", 'IDENT,NAME,TYPE_CODE,PRIVATEUSE,ICAO_ID,ELEVATION,SERVCITY,STATE', box, ''),
         faaQuery('Special_Use_Airspace', '1=1', 'NAME,TYPE_CODE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,TIMESOFUSE,CITY,STATE', box, simp),
         faaQuery('DoD_Mar_13', '1=1', 'Base,Facility,Reason,Floor,Ceiling,State', box, simp),
         faaQuery('Part_Time_National_Security_UAS_Flight_Restrictions', '1=1', 'Base,Facility,Reason,Floor,Ceiling,State,ACTIVETIME,ENDTIME', box, simp),
         faaQuery('Prohibited_Areas', '1=1', 'NAME,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE', box, simp),
         faaQuery('National_Defense_Airspace_TFR_Areas', '1=1', 'NAME,CITY,STATE,WKHR_RMK', box, simp),
-        faaQuery('Stadiums', '1=1', 'NAME,CITY,STATE', box, ''),
+        det ? faaQuery('Stadiums', '1=1', 'NAME,CITY,STATE', box, '') : Promise.resolve({ features: [] }),
       ]);
       const [as, ap, sua, ns, nspt, pro, nda, st] = res.map(ok);
-      res.forEach((r, i) => { if (r.status !== 'fulfilled') log('AIRSPACE', `layer ${i} failed: ${r.reason}`); });
+      const bad = res.map((r, i) => r.status === 'fulfilled' && r.value && r.value.features ? -1 : i).filter(i => i >= 0);
+      res.forEach((r, i) => { if (bad.includes(i)) log('AIRSPACE', `layer ${i} failed: ${r.status === 'fulfilled' ? JSON.stringify(r.value && r.value.error || r.value).slice(0, 120) : r.reason}`); });
       const hund = v => Math.round(v / 100);
       for (const g of sua.features) {
         const p = g.properties, lo = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : ftv(p.LOWER_VAL), hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) : '';
@@ -908,18 +916,22 @@
         p.kind = p.TYPE_CODE === 'HP' ? 'heli' : String(p.PRIVATEUSE) === '1' ? 'private' : 'public';
         p.code = p.ICAO_ID || p.IDENT || '';
       }
-      AV.airspace = as.features || []; AV.airports = ap.features || []; AV.box = box;
+      AV.airspace = as.features || []; AV.airports = ap.features || [];
+      // a layer that failed (weak signal, FAA server busy) is not counted as loaded: it is tried again in 15 s
+      AV.box = bad.length ? null : box; AV.level = level; AV.failAt = bad.length ? Date.now() : 0;
       map.getSource('airspace').setData(fc(AV.airspace));
       map.getSource('airports').setData(fc(AV.airports));
-    } catch (err) { log('AIRSPACE', 'load failed: ' + err); }
+    } catch (err) { log('AIRSPACE', 'load failed: ' + err); AV.failAt = Date.now(); }
     AV.busy = false;
+    if (AV.again || AV.failAt) { AV.again = false; clearTimeout(AV.retry); AV.retry = setTimeout(() => loadAviation(false), AV.failAt ? 15000 : 50); }
   }
   let avTimer = 0;
   map.on('moveend', () => { clearTimeout(avTimer); avTimer = setTimeout(() => loadAviation(false), 400); });
   // LAANC grid squares (only when zoomed in: ~0.9 km squares, thousands per county)
   const LA = { box: null, busy: false };
   async function loadLaanc(force) {
-    if (!S.mapReady || LA.busy || map.getZoom() < 11) return;
+    if (!S.mapReady || map.getZoom() < 11) return;
+    if (LA.busy) { LA.again = true; return; }
     const bb = map.getBounds(), w = bb.getWest(), s = bb.getSouth(), e = bb.getEast(), n = bb.getNorth();
     if (!force && LA.box && w >= LA.box[0] && s >= LA.box[1] && e <= LA.box[2] && n <= LA.box[3]) return;
     const dx = (e - w) * 0.35, dy = (n - s) * 0.35, box = [w - dx, s - dy, e + dx, n + dy].map(v => +v.toFixed(4));
@@ -927,9 +939,11 @@
     try {
       const d = await faaQuery('FAA_UAS_FacilityMap_Data', '1=1', 'CEILING,APT1_FAAID,APT1_NAME,APT1_LAANC', box, '&resultRecordCount=2000');
       for (const g of d.features || []) g.properties.av = 'laanc';
-      map.getSource('laanc').setData(fc(d.features || [])); LA.box = box;
+      if (!d.features) throw new Error(JSON.stringify(d.error || d).slice(0, 120));
+      map.getSource('laanc').setData(fc(d.features)); LA.box = box;
     } catch (err) { log('AIRSPACE', 'LAANC load failed: ' + err); }
     LA.busy = false;
+    if (LA.again) { LA.again = false; setTimeout(() => loadLaanc(false), 50); }
   }
   // tap the map: what airspace is here (and the clouds, when that layer is on)
   function avLines(pt) {
@@ -1064,7 +1078,10 @@
   });
   const tenMin = d => d.toISOString().slice(0, 15) + '0:00Z';
   let blankBuf = null;
-  async function blankTile() { if (!blankBuf) blankBuf = await (await new OffscreenCanvas(1, 1).convertToBlob({ type: 'image/png' })).arrayBuffer(); return blankBuf.slice(0); }
+  async function blankTile() {
+    if (!blankBuf) { const c = new OffscreenCanvas(1, 1); c.getContext('2d'); blankBuf = await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer(); }   // needs a context before it can save
+    return blankBuf.slice(0);
+  }
   async function newestCloudTime() {
     const c = map.getCenter(), n = 64, lr = c.lat * Math.PI / 180;
     const x = Math.floor((c.lng + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(lr) + 1 / Math.cos(lr)) / Math.PI) / 2 * n);
@@ -1120,9 +1137,19 @@
   let cloudPop = null;
   async function cloudAt(ll, lines) {
     if (cloudPop) cloudPop.remove();
-    const head = lines && lines.length ? `<div class="ip">${lines.map(l => `<div class="ip-row">${l}</div>`).join('')}</div>` : '';
-    const pop = cloudPop = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'cloud-pop', offset: 10, maxWidth: '270px' })
+    // the X in the top-right corner closes the card (Jason: "just have an X at the top right hand corner")
+    const head = '<button class="cp-x" aria-label="Close">✕</button>' +
+      (lines && lines.length ? `<div class="ip">${lines.map(l => `<div class="ip-row">${l}</div>`).join('')}</div>` : '');
+    // card sits on a stem above the spot (below it near the top of the screen), leaning away from the screen edges
+    const pt = map.project(ll), W = window.innerWidth, up = pt.y > S.safeTop + 330;
+    const side = pt.x < W * 0.34 ? '-left' : pt.x > W * 0.66 ? '-right' : '', anchor = (up ? 'bottom' : 'top') + side;
+    const offset = { [anchor]: [side === '-left' ? -24 : side === '-right' ? 24 : 0, up ? -52 : 52] };
+    const pop = cloudPop = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'cloud-pop', anchor, offset, maxWidth: '280px' })
       .setLngLat(ll).setHTML(head + (CLOUDS.on ? '<div class="cp-sub">Checking the clouds here…</div>' : '')).addTo(map);
+    pop.getElement().addEventListener('click', ev => {
+      if (!ev.target.closest('.cp-x')) return;
+      ev.stopPropagation(); haptic(); pop.remove(); if (cloudPop === pop) cloudPop = null;
+    });
     if (!CLOUDS.on) return;
     try {
       const u = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat.toFixed(2)}&longitude=${ll.lng.toFixed(2)}` +
