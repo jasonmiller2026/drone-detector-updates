@@ -745,3 +745,9 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
   filter: drop-shadow(0 0 .7px #fff) drop-shadow(0 0 .7px #fff) drop-shadow(0 0 .5px #fff) drop-shadow(0 3px 3px rgba(0,0,0,.5)); }
 .m-pilot.stale .pin { color: #9ca3af; }
 .m-pilot .tag { top: calc(100% + 4px); }
+
+/* v0.2.8 markers stay absolute: ".m-drone { position: relative }" etc. overrode MapLibre's ".maplibregl-marker { position: absolute }",
+   so every marker sat in the page flow and was pushed down by the markers drawn before it (here 22 + 78 + 78 + 44 + 44 = 266 px):
+   drones and pilots showed away from their real spot and the trail seemed to come from somewhere else (Jason: "the trail needs to
+   come directly out of the back of the drone") */
+.maplibregl-marker.m-drone, .maplibregl-marker.m-pilot, .maplibregl-marker.m-me, .maplibregl-marker.m-ac { position: absolute; top: 0; left: 0; }

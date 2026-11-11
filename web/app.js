@@ -392,14 +392,16 @@
     }
     return P.filter((_, i) => keep[i]);
   }
-  function chaikin(P, iters) {
+  // Corner rounding (Chaikin), with each cut capped at 3 m: plain Chaikin cuts a quarter of every segment, so a 240 m spray row
+  // next to a 9 m turn lost 60 m to the curve and the rows looked pinched into hairpins (Jason: "Shouldn't be any zigzagging")
+  function chaikin(P, iters, cap = 3) {
     let Q = P;
     for (let k = 0; k < iters && Q.length > 2; k++) {
       const R = [Q[0]];
       for (let i = 0; i < Q.length - 1; i++) {
-        const a = Q[i], b = Q[i + 1];
-        R.push([0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1], 0.75 * a[2] + 0.25 * b[2]],
-               [0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1], 0.25 * a[2] + 0.75 * b[2]]);
+        const a = Q[i], b = Q[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, f = Math.min(0.25, cap / L);
+        R.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f],
+               [b[0] + (a[0] - b[0]) * f, b[1] + (a[1] - b[1]) * f, b[2] + (a[2] - b[2]) * f]);
       }
       R.push(Q[Q.length - 1]);
       Q = R;
