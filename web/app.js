@@ -2797,7 +2797,7 @@
       () => { }, { enableHighAccuracy: true, maximumAge: 5000 });
     fetch('../demo.jsonl', { cache: 'no-cache' }).then(r => r.text()).then(txt => {
       const rows = txt.trim().split('\n').map(l => JSON.parse(l));
-      const drones = new Map(), me0 = { lat: 40.6702, lon: -81.4447, acc: 6, heading: 25, age: 0 };
+      const drones = new Map(), me0 = { lat: 40.4362, lon: -81.1251, acc: 6, heading: 25, age: 0 };   // a road in the demo area (the web page's stand-in for you)
       let i = 0, simT = Date.parse(rows[0].t) / 1000;
       const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
       function ingest(line, now) {
