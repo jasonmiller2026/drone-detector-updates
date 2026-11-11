@@ -44,7 +44,9 @@
   const isLive = d => S.t - d.lastSeen < LIVE_S;
   // Each drone keeps one color for the session, shared by its icon, pilot, connecting line and path.
   // Order (Jason): green, blue, red, orange, yellow, then purple and the rest.
-  const PAL = ['#9fc928', '#3b82f6', '#ef4444', '#f97316', '#eab308', '#a855f7', '#06b6d4', '#ec4899', '#84cc16', '#14b8a6'];
+  // drone colours in the order drones show up. First is aqua (2026-11-11: lime blended into green fields; Jason: "a different color");
+  // blue and magenta come late because the airspace lines use them
+  const PAL = ['#22d3ee', '#facc15', '#f97316', '#9fc928', '#ef4444', '#a855f7', '#14b8a6', '#ec4899', '#3b82f6', '#84cc16'];
   const CMAP = {};
   let cNext = 0;
   function assignColors(drones) {
@@ -192,18 +194,29 @@
     map.addLayer({ id: 'airtrails', type: 'line', source: 'airtrails', paint: { 'line-color': ['get', 'color'], 'line-width': 2, 'line-opacity': 0.6, 'line-dasharray': [1.5, 1.5] } });
     // Flight paths: one opaque line per drone on a dark casing, so crossings never stack into blotches.
     const lineLayout = { 'line-cap': 'round', 'line-join': 'round' };
+    // paths of drones that are no longer heard: the drone's colour, dimmed and a bit thinner, on the same dark edge, no glow
+    // (they were a thin light grey that disappeared on the satellite map)
     map.addLayer({ id: 'trailold-case', type: 'line', source: 'trailold', layout: lineLayout,
-      paint: { 'line-color': '#9aa3af', 'line-opacity': 0.7, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.4, 17, 3.8] } });
+      paint: { 'line-color': '#05080c', 'line-opacity': 0.5, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 3.8, 17, 4.8] } });
     map.addLayer({ id: 'trailold', type: 'line', source: 'trailold', layout: lineLayout,
-      paint: { 'line-color': '#4b5563', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.1, 17, 1.9] } });
+      paint: { 'line-color': ['get', 'dim'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.5, 14, 2, 17, 2.8] } });
+    // Live flight path, a glass tube (Jason 2026-11-11, flying: "needs to be bold ... a different color ... a little play on the
+    // liquid glass"): a soft glow in the drone's colour, a dark edge so it stands out on fields, roads and trees, a thick opaque core
+    // that brightens toward the drone, and a thin white highlight along it. The core stays opaque so crossings never stack into blotches.
+    const TW = (a, b, c) => ['interpolate', ['linear'], ['zoom'], 10, a, 14, b, 17, c];
+    map.addLayer({ id: 'trail-glow', type: 'line', source: 'trail', layout: lineLayout,
+      paint: { 'line-color': ['get', 'glow'], 'line-opacity': 0.32, 'line-blur': TW(3, 4, 5.5), 'line-width': TW(6, 8, 11) } });
     map.addLayer({ id: 'trail-case', type: 'line', source: 'trail', layout: lineLayout,
-      paint: { 'line-color': ['get', 'edge'], 'line-opacity': 0.8, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 2.4, 17, 3.8] } });
-    // one path layer per drone color (a gradient can't vary per feature), each fading from dark to full color
+      paint: { 'line-color': '#05080c', 'line-opacity': 0.6, 'line-width': TW(3.8, 4.8, 6.2) } });
+    // one core layer per drone colour (a gradient can't vary per feature): deeper at the old end, bright at the drone
     PAL.forEach((c, i) => map.addLayer({ id: 'trail-' + i, type: 'line', source: 'trail', filter: ['==', ['get', 'ci'], i], layout: lineLayout,
       paint: {
-        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.1, 17, 1.9],
-        'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, shade(c, 0.3), 0.6, shade(c, 0.45), 1, shade(c, 0.58)],
+        'line-width': TW(2, 2.8, 3.8),
+        'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, shade(c, 0.6), 0.65, c, 1, lighten(c, 0.25)],
       } }));
+    map.addLayer({ id: 'trail-hi', type: 'line', source: 'trail', layout: lineLayout,
+      paint: { 'line-width': TW(0.6, 0.8, 1.1), 'line-offset': TW(-0.3, -0.5, -0.7), 'line-blur': 0.25,
+        'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, 'rgba(255,255,255,0)', 0.45, 'rgba(255,255,255,.3)', 1, 'rgba(255,255,255,.85)'] } });
     map.addLayer({ id: 'links', type: 'line', source: 'links', paint: { 'line-color': ['get', 'color'], 'line-width': 2.4, 'line-dasharray': [1.2, 1.4], 'line-opacity': 0.95 } });
     map.addLayer({ id: 'shadow', type: 'fill', source: 'shadow', paint: { 'fill-color': '#000', 'fill-opacity': 0.38 } });
     for (const id of ['stalk', 'trail3d', 'drone3d']) {
@@ -564,7 +577,7 @@
     } catch (e) { log('JS', 'terrain: ' + e); }
     for (const id of ['shadow', 'stalk', 'trail3d', 'drone3d']) map.setLayoutProperty(id, 'visibility', S.mode3d ? 'visible' : 'none');
     // in 3D only the floating path shows (no second copy on the ground)
-    for (const id of [...PAL.map((_, i) => 'trail-' + i), 'trail-case', 'trailold', 'trailold-case']) map.setLayoutProperty(id, 'visibility', S.mode3d ? 'none' : 'visible');
+    for (const id of [...PAL.map((_, i) => 'trail-' + i), 'trail-glow', 'trail-case', 'trail-hi', 'trailold', 'trailold-case']) map.setLayoutProperty(id, 'visibility', S.mode3d ? 'none' : 'visible');
     render3d();
   }
   function applyLabels() {
@@ -1300,7 +1313,7 @@
       if (m.tag.innerHTML !== tag) m.tag.innerHTML = tag;
       m.el.style.setProperty('--dc', dcol(d));
       const sp = smoothPath(d);
-      if (sp && sp.coords.length > 1) (live ? trailLive : trailOld).push({ type: 'Feature', properties: { ci: ci(d), edge: lighten(shade2hex(dcol(d), 0.85), 0.12) }, geometry: { type: 'LineString', coordinates: sp.coords } });
+      if (sp && sp.coords.length > 1) (live ? trailLive : trailOld).push({ type: 'Feature', properties: { ci: ci(d), glow: dcol(d), dim: shade(dcol(d), 0.72) }, geometry: { type: 'LineString', coordinates: sp.coords } });
       if (hasPilot(d)) {
         keepP.add(d.id);
         const pm = pilotMarker(d);
@@ -1394,6 +1407,8 @@
     const y = stops()[name]; S.sheetY = y;
     placeSheet(y);
     sheet.classList.toggle('is-mini', name === 'mini');
+    // half open: the lower part of the sheet is off screen, so let the list scroll that much further (the last buttons were cut off)
+    inner.style.paddingBottom = name === 'half' ? `${28 + Math.round(y)}px` : '';
     inner.style.overflowY = name === 'peek' || name === 'mini' ? 'hidden' : 'auto';
     if (name === 'peek' || name === 'mini') { inner.scrollTop = 0; store.set('sheetMini', name === 'mini'); }
   }
@@ -1983,7 +1998,7 @@
     if (navigator.geolocation) navigator.geolocation.watchPosition(
       p => { gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading, age: 0 }; },
       () => { }, { enableHighAccuracy: true, maximumAge: 5000 });
-    fetch('../demo.jsonl').then(r => r.text()).then(txt => {
+    fetch('../demo.jsonl', { cache: 'no-cache' }).then(r => r.text()).then(txt => {
       const rows = txt.trim().split('\n').map(l => JSON.parse(l));
       const drones = new Map(), me0 = { lat: 40.6702, lon: -81.4447, acc: 6, heading: 25, age: 0 };
       let i = 0, simT = Date.parse(rows[0].t) / 1000;
