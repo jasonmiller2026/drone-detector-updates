@@ -798,3 +798,18 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 .m-drone.flat .dwrap { display: block; transition: none; transform-origin: 50% 50%; filter: drop-shadow(0 10px 8px rgba(0, 0, 0, .55)); }
 .m-drone.flat .ring { display: none; }
 .m-drone.flat .tag { bottom: 50%; transform: translate(-50%, -26px); }
+
+/* ---------- 3D camera (2026-11-11) */
+#controls .c3d { display: none; }
+body.is-3d #controls .c3d { display: grid; }
+#btn-north svg { transition: none; }
+.cam3d { position: absolute; z-index: 9; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 24px)); padding: 7px 8px 6px; border-radius: 20px; }
+.cam-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.cam-chips::-webkit-scrollbar { display: none; }
+.cam-chips button { flex: none; height: 32px; padding: 0 12px; border-radius: 999px; font-size: 13px; font-weight: 700; color: var(--text);
+  background: rgba(255, 255, 255, .07); border: 1px solid var(--line2); white-space: nowrap; }
+.cam-chips button.on { background: var(--brand-hi, #9fc928); border-color: transparent; color: #0b1206; }
+.cam-chips button[disabled] { opacity: .38; }
+.cam-hint { font-size: 12px; color: var(--muted); padding: 5px 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 15px; }
+.cam-hint b { color: var(--text); font-weight: 700; }
+body.is-3d .cloud-time { transform: translateY(-62px); }

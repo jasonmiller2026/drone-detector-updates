@@ -38,6 +38,13 @@
 </defs></svg>
 <div id="map"></div>
 <div id="cloud-time" class="cloud-time glass hidden"></div>
+<div id="cam3d" class="cam3d glass liquid hidden">
+  <div class="cam-chips">
+    <button data-cam="orbit">Orbit</button><button data-cam="spin" class="hidden" aria-label="Turn slowly">⟳ Spin</button><button data-cam="follow">Follow</button>
+    <button data-cam="me">From me</button><button data-cam="pilot">From pilot</button><button data-cam="overview">Overview</button><button data-cam="free">Free</button>
+  </div>
+  <div class="cam-hint" id="cam-hint"></div>
+</div>
 
 <header id="top">
   <div class="brand glass liquid" id="brand">
@@ -80,6 +87,9 @@
     <svg viewBox="0 0 24 24"><path d="M6.8 18.5h10.4a4 4 0 0 0 .5-7.97A5.6 5.6 0 0 0 7 9.4a4.6 4.6 0 0 0-.2 9.1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
   </button>
   <button class="ctl" id="btn-3d" aria-label="3D view"><span>3D</span></button>
+  <button class="ctl c3d" id="btn-north" aria-label="Face north"><svg viewBox="0 0 24 24"><path d="M12 3.5 16.5 13h-9z" fill="#ef4444"/><path d="M12 20.5 7.5 13h9z" fill="currentColor" opacity=".55"/></svg></button>
+  <button class="ctl c3d" id="btn-tiltup" aria-label="Tilt up"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  <button class="ctl c3d" id="btn-tiltdn" aria-label="Tilt down"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <button class="ctl" id="btn-locate" aria-label="My location">
     <svg viewBox="0 0 24 24"><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>
   </button>

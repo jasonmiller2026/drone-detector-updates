@@ -183,6 +183,19 @@
     center: [-81.44, 40.67], zoom: 11, maxZoom: 21, maxPitch: 80, attributionControl: false, fadeDuration: 120,
   });
   map.addControl(new maplibregl.AttributionControl({ compact: true }), 'top-right');
+  // Safety net: if MapLibre throws inside an animation frame, its task queue stays marked "running" and every later frame fails,
+  // so the map freezes. Unstick it, end the broken glide, and keep going.
+  (() => {
+    const q = map._renderTaskQueue; if (!q || typeof q.run !== 'function') return;
+    const run = q.run.bind(q); let told = 0;
+    q.run = function (t) {
+      try { return run(t); } catch (e) {
+        this._currentlyRunning = false;
+        setTimeout(() => { try { map.stop(); map.triggerRepaint(); } catch (x) { } }, 0);
+        if (Date.now() - told > 60000) { told = Date.now(); log('JS', 'map frame error (recovered): ' + (e && e.message)); }
+      }
+    };
+  })();
   function placeAttrib() { const c = $('#controls'), el = document.querySelector('.maplibregl-ctrl-top-right'); if (c && el) el.style.top = (c.getBoundingClientRect().bottom + 6) + 'px'; }
   window.addEventListener('resize', placeAttrib); setTimeout(placeAttrib, 0);
   window.RIDmap = map;   // for debugging over USB (chrome://inspect)
@@ -255,7 +268,7 @@
     if (ap.length) { S.apt = ap[0].properties; S.aptLL = ap[0].geometry.coordinates; select('apt', S.apt.code || S.apt.IDENT, false); return; }
     const lines = S.settings.airspace !== false ? avLines(e.point) : [];
     if (lines.length || CLOUDS.on) cloudAt(e.lngLat, lines.slice(0, 5)); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
-    if (S.sel && !S.rp) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
+    if (S.sel && !S.rp && !camLocked()) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
   });
   // a one-finger drag takes over from Follow; two fingers (turn, tilt, pinch) keep following
   map.on('dragstart', e => {
@@ -271,7 +284,7 @@
   map.on('pitch', rotateMarkers);
   // Switch 3D on/off only when a tilt has finished: changing terrain mid-animation cancelled the tilt
   // and left the map stuck nearly flat in "3D" (seen on the S24 screen recording).
-  map.on('pitchend', () => { const on = map.getPitch() > 15; if (on !== S.mode3d) { S.mode3d = on; apply3d(); if (S.st) renderMap(); } });
+  map.on('pitchend', () => { const on = map.getPitch() > 15; if (on !== S.mode3d) { S.mode3d = on; apply3d(); if (S.st) renderMap(); setCam(on ? (camTarget() ? 'orbit' : 'free') : null, true); } });
   function go3d(opts) {   // terrain first, wait until its heights have loaded, then tilt (else the scene sits too high)
     const tilt = () => map.easeTo(Object.assign({ pitch: 62, duration: 1200 }, opts || {}));
     if (S.mode3d) { tilt(); return; }
@@ -294,8 +307,9 @@
       }
       try {
         const ll = maplibregl.LngLat.convert([d.lon, d.lat]), mc = maplibregl.MercatorCoordinate.fromLngLat(ll);
-        const ground = map.terrain.getElevationForLngLatZoom(ll, t.tileZoom) || 0, h = Math.max(1, d.height || 0) * (map.terrain.exaggeration || 1);
-        const p0 = t.coordinatePoint(mc, ground, t.pixelMatrix3D), p1 = t.coordinatePoint(mc, ground + h, t.pixelMatrix3D);
+        const ground = map.terrain.getElevationForLngLatZoom(ll, t.tileZoom) || 0, tg = takeoffGround(d);
+        const top = Math.max(ground + 1, tg != null ? tg + Math.max(0, d.height || 0) : ground + Math.max(1, d.height || 0));   // height is above takeoff
+        const p0 = t.coordinatePoint(mc, ground, t.pixelMatrix3D), p1 = t.coordinatePoint(mc, top, t.pixelMatrix3D);
         m.marker.setOffset([p1.x - p0.x, p1.y - p0.y]);
         m.lifted = true;
       } catch (e) { }
@@ -534,6 +548,15 @@
       for (const a of ['a_pos', 'a_prev', 'a_next', 'a_side', 'a_t', 'a_col']) this.loc[a] = gl.getAttribLocation(p, a);
       for (const u of ['u_matrix', 'u_half', 'u_width', 'u_zoff']) this.loc[u] = gl.getUniformLocation(p, u);
       this.vbo = gl.createBuffer(); this.ibo = gl.createBuffer();
+      // the curtain: a see-through wall from the path down to the ground, so height reads at any angle (like Google Earth's
+      // "extend path to ground"); the drone's colour, fading toward the ground
+      const cvs = `uniform mat4 u_matrix; uniform float u_zoff; attribute vec3 a_pos; attribute vec4 a_col; varying vec4 v_col;
+        void main() { gl_Position = u_matrix * vec4(a_pos - vec3(0.0, 0.0, u_zoff), 1.0); v_col = a_col; }`;
+      const cfs = `precision mediump float; varying vec4 v_col; void main() { gl_FragColor = vec4(v_col.rgb * v_col.a, v_col.a); }`;
+      const q = this.cprog = gl.createProgram();
+      gl.attachShader(q, sh(gl.VERTEX_SHADER, cvs)); gl.attachShader(q, sh(gl.FRAGMENT_SHADER, cfs)); gl.linkProgram(q);
+      this.cloc = { a_pos: gl.getAttribLocation(q, 'a_pos'), a_col: gl.getAttribLocation(q, 'a_col'), u_matrix: gl.getUniformLocation(q, 'u_matrix'), u_zoff: gl.getUniformLocation(q, 'u_zoff') };
+      this.cvbo = gl.createBuffer(); this.cibo = gl.createBuffer(); this.ccount = 0;
     },
     upload(gl, verts, idx) {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo); gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
@@ -542,14 +565,34 @@
     },
     render(gl, matrix) {
       if (!S.mode3d || !this.count) return;
-      if (this.pending) { this.upload(gl, this.pending.v, this.pending.i); this.pending = null; }
+      if (this.pending) {
+        this.upload(gl, this.pending.v, this.pending.i);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.cvbo); gl.bufferData(gl.ARRAY_BUFFER, this.pending.cv, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.pending.ci, gl.DYNAMIC_DRAW);
+        this.ccount = this.pending.ci.length;
+        this.pending = null;
+      }
+      const zoff = maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), map.transform.elevation || 0).z;
+      if (gl.bindVertexArray) gl.bindVertexArray(null);
+      if (this.ccount && S.settings.curtain !== false) {
+        const C = this.cloc;
+        gl.useProgram(this.cprog);
+        gl.uniformMatrix4fv(C.u_matrix, false, matrix); gl.uniform1f(C.u_zoff, zoff);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.cvbo); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.cibo);
+        gl.enableVertexAttribArray(C.a_pos); gl.vertexAttribPointer(C.a_pos, 3, gl.FLOAT, false, 28, 0);
+        gl.enableVertexAttribArray(C.a_col); gl.vertexAttribPointer(C.a_col, 4, gl.FLOAT, false, 28, 12);
+        gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(false);
+        gl.drawElements(gl.TRIANGLES, this.ccount, gl.UNSIGNED_SHORT, 0);
+        gl.disableVertexAttribArray(C.a_pos); gl.disableVertexAttribArray(C.a_col);
+      }
       const L = this.loc, F = 4, stride = 15 * F;
       if (gl.bindVertexArray) gl.bindVertexArray(null);   // never touch the map's own vertex arrays
       gl.useProgram(this.prog);
       gl.uniformMatrix4fv(L.u_matrix, false, matrix);
       gl.uniform2f(L.u_half, gl.drawingBufferWidth / 2, gl.drawingBufferHeight / 2);
       gl.uniform1f(L.u_width, 2.6 * (window.devicePixelRatio || 1));
-      gl.uniform1f(L.u_zoff, maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), map.transform.elevation || 0).z);
+      gl.uniform1f(L.u_zoff, zoff);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
       const attr = (n, size, off) => { gl.enableVertexAttribArray(L[n]); gl.vertexAttribPointer(L[n], size, gl.FLOAT, false, stride, off * F); };
       attr('a_pos', 3, 0); attr('a_prev', 3, 3); attr('a_next', 3, 6); attr('a_side', 1, 9); attr('a_t', 1, 10); attr('a_col', 3, 11);
@@ -563,7 +606,7 @@
   /** Rebuild the GPU path buffers from every drone's smoothed path (called once a second). */
   function updatePath3d() {
     if (!S.mode3d || !map.getLayer('path3d') || !S.st) { PATH3D.count = 0; PATH3D.pending = null; return; }
-    const V = [], I = [];
+    const V = [], I = [], CV = [], CI = [];
     const groundOf = (lon, lat) => {
       let g = null;
       try { if (map.terrain) g = map.terrain.getElevationForLngLatZoom(maplibregl.LngLat.convert([lon, lat]), map.transform.tileZoom); } catch (e) { }
@@ -576,24 +619,34 @@
       if (!r || r.P.length < 2) continue;
       let P = r.P;
       if (P.length > 1500) { const st = Math.ceil(P.length / 1500), Q = []; for (let i = 0; i < P.length; i += st) Q.push(P[i]); if (Q[Q.length - 1] !== P[P.length - 1]) Q.push(P[P.length - 1]); P = Q; }
-      const g0 = groundOf(d.lon, d.lat);
+      const g0 = groundOf(d.lon, d.lat), tg = takeoffGround(d);
       if (g0 == null) continue;   // terrain not loaded yet: wait rather than draw the path at sea level
       const hexToRgb = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; };
       const col = isLive(d) ? hexToRgb(dcol(d)) : [0.58, 0.64, 0.72];
+      const lows = [];
       const pts = P.map(p => {
-        const lon = r.lon0 + p[0] / r.kx, lat = r.lat0 + p[1] / M_LAT, g = groundOf(lon, lat);
-        const mc = maplibregl.MercatorCoordinate.fromLngLat([lon, lat], (g == null ? g0 : g) + Math.max(1, p[2]));
+        const lon = r.lon0 + p[0] / r.kx, lat = r.lat0 + p[1] / M_LAT, g = groundOf(lon, lat), gz = g == null ? g0 : g;
+        const mc = maplibregl.MercatorCoordinate.fromLngLat([lon, lat], Math.max(gz + 1, (tg != null ? tg : gz) + Math.max(0, p[2])));   // above takeoff
+        lows.push(maplibregl.MercatorCoordinate.fromLngLat([lon, lat], gz).z);
         return [mc.x, mc.y, mc.z];
       });
       const n = pts.length, base = V.length / 15;
       if (base + n * 2 > 65000) break;
+      const cb = CV.length / 7, ta = isLive(d) ? 0.3 : 0.16;
+      if (cb + n * 2 < 65000) {
+        for (let i = 0; i < n; i++) {
+          const c = pts[i];
+          CV.push(c[0], c[1], c[2], col[0], col[1], col[2], ta, c[0], c[1], lows[i], col[0], col[1], col[2], 0.03);
+          if (i < n - 1) { const a = cb + i * 2; CI.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+        }
+      }
       for (let i = 0; i < n; i++) {
         const c = pts[i], pv = pts[Math.max(0, i - 1)], nx = pts[Math.min(n - 1, i + 1)], t = i / (n - 1);
         for (const side of [-1, 1]) V.push(c[0], c[1], c[2], pv[0], pv[1], pv[2], nx[0], nx[1], nx[2], side, t, col[0], col[1], col[2], 0);
         if (i < n - 1) { const a = base + i * 2; I.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
       }
     }
-    PATH3D.pending = { v: new Float32Array(V), i: new Uint16Array(I) };
+    PATH3D.pending = { v: new Float32Array(V), i: new Uint16Array(I), cv: new Float32Array(CV), ci: new Uint16Array(CI) };
     PATH3D.count = I.length;
     map.triggerRepaint();
   }
@@ -629,7 +682,7 @@
     const drones = [], trail = [], stalk = [], shadow = [];
     for (const d of S.st.drones) {
       if (!hasPos(d) || S.t - d.lastSeen > SHOW_S) continue;
-      const live = isLive(d), h = Math.max(0, d.height || 0);
+      const live = isLive(d), h = droneZ(d, d.lat, d.lon, d.height).above;   // stalk: from the ground under it up to the drone
       // (the block model from droneModel() is no longer drawn: the detailed icon floats at the drone's height instead)
       // (the floating path is now drawn by PATH3D)
       if (h > 2) stalk.push(poly(box(d.lat, d.lon, w * 0.4, w * 0.4, 0), { base: 0, top: Math.max(h, 1), color: live ? '#ffb37a' : '#94a3b8' }));
@@ -645,6 +698,9 @@
     for (const m of mk.drone.values()) m.el.classList.toggle('flat', S.mode3d);
     if (!S.mapReady) return;
     try {
+      // stop any camera glide first: turning terrain on mid-glide made MapLibre 4.7.1 throw in the next animation frame
+      // (no elevation centre for that glide) and the whole map froze half-tilted (tap a drone, then 3D view straight away)
+      if ((S.mode3d && !map.getTerrain()) || (!S.mode3d && map.getTerrain())) map.stop();
       if (S.mode3d && !map.getTerrain()) map.setTerrain({ source: 'dem', exaggeration: 1 });
       if (!S.mode3d && map.getTerrain()) map.setTerrain(null);
     } catch (e) { log('JS', 'terrain: ' + e); }
@@ -1478,8 +1534,220 @@
     // never fight fingers that are turning or tilting the map, or a camera move already running (it cancelled the 3D tilt)
     if (!S.follow || S.kind !== 'drone' || S.touching || map.isMoving()) return;
     const d = S.st.drones.find(x => x.id === S.sel);
+    if (S.mode3d && CAM.mode) return;   // 3D has its own camera (below)
     if (d && hasPos(d)) map.easeTo({ center: [d.lon, d.lat], duration: 900, padding: pad(), offset: liftOffset(d, map.getPitch(), map.getZoom()) });
   }
+  // ------------------------------------------------------------------ 3D camera (Jason 2026-11-11: "I want to be able to move around and
+  // be able to see stuff very easily ... It has to be very, very useful and user friendly"). After researching Flightradar24 3D,
+  // ForeFlight's 3D replay, Google Earth and Cesium: one-tap camera modes, the camera locked on the selected drone with a one-finger
+  // drag circling around it (no two-finger tricks), visible tilt and north buttons, and a "where to look" readout.
+  //   Orbit       locked on the drone; drag sideways to circle it, up/down to tilt; pinch to zoom; Spin turns slowly by itself
+  //   Follow      behind the drone, looking where it is going
+  //   From me     from just behind you toward the drone, with which way and how high to look
+  //   From pilot  the same from the pilot's spot
+  //   Overview    the whole flight in view, then free
+  //   Free        the map moves normally
+  const CAM = { mode: null, spin: false, raf: 0, last: 0, easeUntil: 0, drag: null, c: null, hintAt: 0 };
+  const CAM_LOCKED = ['orbit', 'follow', 'me', 'pilot'];
+  const camTarget = () => { const d = selDrone(); return d && hasPos(d) ? d : null; };
+  const camLocked = () => S.mode3d && CAM_LOCKED.includes(CAM.mode) && !!camTarget();
+  const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
+  const angDiff = (a, b) => ((b - a + 540) % 360) - 180;
+  function groundOf3d(lat, lon) {   // terrain height (m above sea level): the 3D terrain when it is loaded, else the DEM tile reader
+    let g = null;
+    try { if (map.terrain) g = map.terrain.getElevationForLngLatZoom(maplibregl.LngLat.convert([lon, lat]), map.transform.tileZoom); } catch (e) { }
+    if (g == null || g === 0 || !isFinite(g)) g = groundAt(lat, lon);
+    return g != null && isFinite(g) ? g : null;
+  }
+  // Remote ID height is above the TAKEOFF point. In 3D a drone therefore sits at the takeoff ground plus its height; measuring from
+  // the ground under it drew it too low over a valley and too high over a hill (found in the 3D research)
+  const TOG = new Map();
+  function takeoffGround(d) {
+    const c = TOG.get(d.id); if (c != null) return c;
+    const t0 = d.track && d.track[0];
+    let at = t0 && t0[3] != null && t0[3] <= 3 ? [t0[1], t0[2]] : hasPilot(d) ? [d.pilotLat, d.pilotLon] : d.homeLat != null ? [d.homeLat, d.homeLon] : null;
+    if (!at) return null;
+    const g = groundOf3d(at[0], at[1]);
+    if (g != null) TOG.set(d.id, g);
+    return g;
+  }
+  /** Sea-level height (m) of the drone in the 3D scene, and its height above the ground under it. */
+  function droneZ(d, lat, lon, h) {
+    const gU = groundOf3d(lat, lon), tg = takeoffGround(d), hh = Math.max(0, h || 0);
+    const z = tg != null ? tg + hh : (gU != null ? gU + hh : null);
+    return { z, above: z != null && gU != null ? Math.max(0.5, z - gU) : Math.max(0.5, hh), ground: gU };
+  }
+  function lookFrom(obs, d) {   // where to look from obs toward the drone
+    const gO = groundOf3d(obs.lat, obs.lon), Z = droneZ(d, d.lat, d.lon, d.height);
+    const D = dist(obs.lat, obs.lon, d.lat, d.lon), brg = bearing(obs.lat, obs.lon, d.lat, d.lon);
+    const up = gO != null && Z.z != null ? Z.z - (gO + 1.6) : null;
+    return { D, brg, up, elev: up != null ? Math.atan2(up, Math.max(1, D)) * 180 / Math.PI : null, gO, Z };
+  }
+  function povCamera(obs, d) {   // "From me" / "From pilot": a raised camera 30 m behind the observer, aimed so the drone sits in view
+    const L = lookFrom(obs, d);
+    if (L.D < 8 || L.gO == null || L.Z.z == null) return null;
+    const back = off(obs.lat, obs.lon, -Math.sin(rad(L.brg)) * 30, -Math.cos(rad(L.brg)) * 30);
+    let zCam = L.gO + Math.max(40, 1.3 * Math.max(0, L.Z.z - L.gO)), f = 0.65, gT = L.gO;
+    // room above the screen's working centre (between the header and the sheet) as an angle: put the drone about half way up it
+    const P = pad(), H = map.getCanvas().clientHeight || window.innerHeight, yc = P.top + (H - P.top - P.bottom) / 2;
+    const focal = (H / 2) / Math.tan(rad((map.transform.fov || 36.87) / 2)), lift = 0.5 * Math.atan(Math.max(20, yc - (S.safeTop + 90)) / focal);
+    for (let k = 0; k < 4; k++) {
+      const aD = Math.atan2(zCam - L.Z.z, L.D + 30);                     // the drone, below the horizon seen from the camera
+      const aT = aD + lift;                                             // aim under it so it floats in the upper half of the view
+      f = clampN(((zCam - gT) / Math.tan(aT) - 30) / L.D, 0.12, 1);
+      if (aT < rad(14)) { zCam = L.gO + (zCam - L.gO) * 1.35 + 10; continue; }   // too flat for the tilt limit: go higher
+      break;
+    }
+    const tLat = obs.lat + (d.lat - obs.lat) * f, tLon = obs.lon + (d.lon - obs.lon) * f;
+    gT = groundOf3d(tLat, tLon); if (gT == null) gT = L.gO;
+    try {
+      const o = map.calculateCameraOptionsFromTo(new maplibregl.LngLat(back[0], back[1]), zCam, new maplibregl.LngLat(tLon, tLat), gT);
+      return { center: [tLon, tLat], zoom: o.zoom, bearing: o.bearing, pitch: clampN(o.pitch, 10, 78) };
+    } catch (e) { return null; }
+  }
+  function camWanted(d, dt) {   // the camera this mode wants right now
+    const pitch = map.getPitch(), zoom = map.getZoom();
+    if (CAM.mode === 'me' || CAM.mode === 'pilot') {
+      const obs = CAM.mode === 'me' ? me() : hasPilot(d) ? { lat: d.pilotLat, lon: d.pilotLon } : null;
+      return obs ? povCamera(obs, d) : null;
+    }
+    const Z = droneZ(d, d.lat, d.lon, d.height);
+    let b = map.getBearing(), p = pitch;
+    if (CAM.mode === 'follow') {
+      const c = iconHeading(d);
+      if (c != null) b += angDiff(b, c) * (1 - Math.exp(-dt / 0.9));    // swing round behind it, smoothly
+      p += (68 - p) * (1 - Math.exp(-dt / 0.6));
+    } else if (CAM.mode === 'orbit' && CAM.spin && !CAM.drag && !S.touching) b += 7 * dt;   // slow turn: the movement shows depth
+    return { center: [d.lon, d.lat], zoom, bearing: b, pitch: p, offset: liftOffset({ lat: d.lat, height: Z.above }, p, zoom) };
+  }
+  function camFrame(now) {
+    CAM.raf = 0;
+    if (!camLocked()) return;
+    CAM.raf = requestAnimationFrame(camFrame);
+    const dt = Math.min(0.2, (now - (CAM.last || now)) / 1000); CAM.last = now;
+    if (document.hidden || now < CAM.easeUntil || S.touching && !CAM.drag || (map.isMoving() && !CAM.moving)) return;
+    const d = camTarget(), w = d && camWanted(d, dt);
+    if (!w) return;
+    // live drones report once a second: glide the camera after them; a replay already moves smoothly
+    const k = S.rp ? 1 : 1 - Math.exp(-dt / 0.3);
+    if (!CAM.c || CAM.drag) CAM.c = w.center.slice();
+    else { CAM.c[0] += (w.center[0] - CAM.c[0]) * k; CAM.c[1] += (w.center[1] - CAM.c[1]) * k; }
+    CAM.moving = true;
+    map.easeTo({ center: CAM.c, zoom: w.zoom, bearing: w.bearing, pitch: w.pitch, offset: w.offset || [0, 0], padding: pad(), duration: 0 });
+    CAM.moving = false;
+    if (now - CAM.hintAt > 500) { CAM.hintAt = now; camHint(); }
+  }
+  function camRun() { if (camLocked() && !CAM.raf) { CAM.last = 0; CAM.raf = requestAnimationFrame(camFrame); } }
+  function camGestures() {   // locked on a drone: one finger circles it, pinch and wheel zoom about it
+    const lock = camLocked();
+    if (lock) { map.dragPan.disable(); map.touchZoomRotate.enable({ around: 'center' }); map.scrollZoom.enable({ around: 'center' }); }
+    else { map.dragPan.enable(); map.touchZoomRotate.enable(); map.scrollZoom.enable(); }
+  }
+  function setCam(mode, quiet) {
+    if (!S.mode3d) mode = null;
+    if (mode && CAM_LOCKED.includes(mode) && !camTarget()) mode = 'free';
+    CAM.mode = mode; CAM.c = null;
+    if (mode !== 'orbit') CAM.spin = false;
+    S.follow = false;
+    camGestures(); camUI();
+    if (!mode) return;
+    const d = camTarget();
+    if (mode === 'overview') {
+      const pts = [];
+      if (d) { for (const q of d.track || []) pts.push([q[2], q[1]]); pts.push([d.lon, d.lat]); if (hasPilot(d)) pts.push([d.pilotLon, d.pilotLat]); }
+      else for (const x of S.st.drones) if (hasPos(x) && S.t - x.lastSeen <= SHOW_S) { pts.push([x.lon, x.lat]); if (hasPilot(x)) pts.push([x.pilotLon, x.pilotLat]); }
+      if (pts.length) {
+        const bb = pts.reduce((b, q) => [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])], [180, 90, -180, -90]);
+        const o = map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad(), bearing: map.getBearing(), maxZoom: 17.5 });
+        if (o) map.easeTo({ center: o.center, zoom: o.zoom - 0.45, bearing: map.getBearing(), pitch: 55, duration: 900, freezeElevation: true });
+      }
+      CAM.mode = 'free'; camGestures(); camUI();
+      return;
+    }
+    if (mode === 'free') return;
+    if (!quiet && d) {   // glide into the new view, then the frame loop keeps it
+      const w = camWanted(d, 0);
+      if (w && (mode === 'orbit' || mode === 'follow') && w.zoom < 15.5) {   // picked from far out: move in close to the drone
+        w.zoom = 16.3; w.offset = liftOffset({ lat: d.lat, height: droneZ(d, d.lat, d.lon, d.height).above }, w.pitch, w.zoom);
+      }
+      if (w) { CAM.easeUntil = performance.now() + 750; map.easeTo({ center: w.center, zoom: w.zoom, bearing: w.bearing, pitch: w.pitch, offset: w.offset || [0, 0], padding: pad(), duration: 700, freezeElevation: true }); }
+    }
+    camRun();
+  }
+  function camHint() {
+    const el = $('#cam-hint'); if (!el) return;
+    const d = camTarget();
+    let h = '';
+    if (!S.mode3d) h = '';
+    else if (CAM.mode === 'orbit') h = `Drag to circle ${d ? esc(shortModel(d)) : 'the drone'} · pinch to zoom`;
+    else if (CAM.mode === 'follow') h = 'Behind the drone, looking where it is going';
+    else if ((CAM.mode === 'me' || CAM.mode === 'pilot') && d) {
+      const obs = CAM.mode === 'me' ? me() : hasPilot(d) ? { lat: d.pilotLat, lon: d.pilotLon } : null;
+      if (!obs) h = CAM.mode === 'me' ? 'Turn on location to look from where you are' : 'This drone is not sending its pilot position';
+      else {
+        const L = lookFrom(obs, d);
+        h = `<b>${CAM.mode === 'me' ? 'Look' : 'Pilot looks'} ${compass(L.brg)} ${Math.round(L.brg)}°</b>` +
+          (L.elev != null ? ` · <b>${Math.max(0, Math.round(L.elev))}° up</b>` : '') + ` · ${fmtDist(L.D)} away` +
+          (L.up != null ? ` · ${ft(Math.max(0, L.up))} ft above ${CAM.mode === 'me' ? 'you' : 'the pilot'}` : '');
+      }
+    } else h = d ? 'Free: drag to move the map, two fingers to tilt and turn' : 'Tap a drone to circle it, or drag to move';
+    if (el.innerHTML !== h) el.innerHTML = h;
+  }
+  function camUI() {
+    const bar = $('#cam3d'); if (!bar) return;
+    bar.classList.toggle('hidden', !S.mode3d);
+    document.body.classList.toggle('is-3d', !!S.mode3d);
+    const has = !!camTarget();
+    for (const b of bar.querySelectorAll('[data-cam]')) {
+      const m = b.dataset.cam;
+      b.classList.toggle('on', m === CAM.mode || (m === 'spin' && CAM.spin));
+      b.disabled = (CAM_LOCKED.includes(m) || m === 'spin') && !has;
+      if (m === 'spin') b.classList.toggle('hidden', CAM.mode !== 'orbit');
+    }
+    camHint(); placeCam();
+  }
+  function placeCam() {
+    const bar = $('#cam3d'); if (!bar || bar.classList.contains('hidden')) return;
+    bar.style.bottom = Math.round(window.innerHeight - sheetTop() + 10) + 'px';
+  }
+  $('#cam3d').addEventListener('click', e => {
+    const b = e.target.closest('[data-cam]'); if (!b || b.disabled) return;
+    haptic();
+    if (b.dataset.cam === 'spin') { CAM.spin = !CAM.spin; camUI(); return; }
+    setCam(b.dataset.cam);
+  });
+  // one finger on the map while locked on a drone: circle it (sideways) and tilt (up/down)
+  const camPtr = new Map();
+  cv.addEventListener('pointerdown', e => {
+    camPtr.set(e.pointerId, true);
+    CAM.drag = camLocked() && camPtr.size === 1 ? { x: e.clientX, y: e.clientY, moved: false } : null;
+  });
+  cv.addEventListener('pointermove', e => {
+    const g = CAM.drag; if (!g || camPtr.size !== 1 || !camLocked()) return;
+    const dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.moved && Math.hypot(dx, dy) < 4) return;
+    g.moved = true; g.x = e.clientX; g.y = e.clientY;
+    if (CAM.mode !== 'orbit') { CAM.mode = 'orbit'; camUI(); }          // taking hold of a preset view turns it into an orbit
+    const d = camTarget(); if (!d) return;
+    const p = clampN(map.getPitch() - dy * 0.3, 0, 80), b = map.getBearing() - dx * 0.35;
+    const Z = droneZ(d, d.lat, d.lon, d.height);
+    CAM.moving = true;
+    map.easeTo({ center: CAM.c || [d.lon, d.lat], bearing: b, pitch: p, offset: liftOffset({ lat: d.lat, height: Z.above }, p, map.getZoom()), padding: pad(), duration: 0 });
+    CAM.moving = false;
+  });
+  const camUp = e => { camPtr.delete(e.pointerId); if (!camPtr.size) CAM.drag = null; };
+  cv.addEventListener('pointerup', camUp); cv.addEventListener('pointercancel', camUp);
+  // north and tilt buttons (shown in 3D)
+  $('#btn-north').addEventListener('click', () => { haptic(); CAM.easeUntil = performance.now() + 450; map.easeTo({ bearing: 0, duration: 400 }); });
+  const tilt = step => { haptic(); const p = clampN(map.getPitch() + step, 20, 80); CAM.easeUntil = performance.now() + 300; map.easeTo({ pitch: p, duration: 260 }); };
+  $('#btn-tiltup').addEventListener('click', () => tilt(12));
+  $('#btn-tiltdn').addEventListener('click', () => tilt(-12));
+  const turnNorth = () => { const n = $('#btn-north svg'); if (n) n.style.transform = `rotate(${-map.getBearing()}deg)`; };
+  map.on('rotate', turnNorth);
+  window.RIDcam = { CAM, droneZ, takeoffGround, groundOf3d, camWanted, target: () => camTarget(), setCam: m => setCam(m) };   // for debugging over USB
+  // sky and haze on the horizon when tilted
+  map.on('load', () => { try { map.setSky({ 'sky-color': '#6f9fd8', 'horizon-color': '#d7e4f2', 'fog-color': '#d7e4f2', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.75, 'atmosphere-blend': 0.6 }); } catch (e) { log('JS', 'sky: ' + e); } });
+
 
   // ------------------------------------------------------------------ bottom sheet
   const sheet = $('#sheet'), inner = $('#sheet-inner');
@@ -1496,7 +1764,7 @@
   const SHEET_ORDER = ['mini', 'peek', 'half', 'full'];
   // The part of the sheet slid below its resting edge is clipped off, so a closed sheet floats above
   // Android's navigation buttons with rounded corners instead of showing through behind them.
-  const placeSheet = y => { sheet.style.transform = `translateY(${y}px)`; sheet.style.clipPath = `inset(0 0 ${y}px 0 round 30px)`; };
+  const placeSheet = y => { sheet.style.transform = `translateY(${y}px)`; sheet.style.clipPath = `inset(0 0 ${y}px 0 round 30px)`; placeCam(); };
   function setSheet(name) {
     if (S.sheet !== name && drag === null) haptic();   // one light tick per snap
     S.sheet = name;
@@ -1557,12 +1825,13 @@
     inner.scrollTop = 0;
     renderSheet();
     if (S.mapReady) renderMap();
+    if (S.mode3d && kind === 'drone') { setCam('orbit'); fly = false; }
     if (fly) {
       if (kind === 'drone') { const d = S.st.drones.find(x => x.id === id); if (d && hasPos(d)) flyTo(d.lat, d.lon, 15); }
       if (kind === 'ac') { const a = (S.st.aircraft || []).find(x => x.hex === id); if (a) flyTo(a.lat, a.lon, 12); }
     }
   }
-  function deselect() { if (S.rp) return stopReplay(); S.sel = null; S.kind = null; S.follow = false; S.view = ''; renderSheet(); if (S.mapReady) renderMap(); }
+  function deselect() { if (S.rp) return stopReplay(); S.sel = null; S.kind = null; S.follow = false; S.view = ''; renderSheet(); if (S.mapReady) renderMap(); if (S.mode3d) setCam('free', true); }
 
   function selDrone() { return S.kind === 'drone' && S.st ? S.st.drones.find(x => x.id === S.sel) : null; }
   function doAct(a) {
@@ -1593,9 +1862,11 @@
       // give the 3D scene the screen, and aim so the floating drone (not the ground under it) lands mid-screen: in a 62 deg tilt a
       // drone at height h sits h*sin(62)/(metres per pixel) above its ground spot (it ended up at the top edge, under the header)
       if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
-      S.follow = true; S.view = ''; renderSheet();   // 3D view keeps the drone in frame as it flies
-      const z = Math.max(map.getZoom(), 16);
-      go3d({ center: [d.lon, d.lat], zoom: z, bearing: brg, duration: 1400, padding: pad(), offset: liftOffset(d, 62, z) });
+      S.view = ''; renderSheet();
+      const z = Math.max(map.getZoom(), 16), Z = droneZ(d, d.lat, d.lon, d.height);
+      CAM.easeUntil = performance.now() + 3400;   // let the tilt finish before the 3D camera takes over
+      go3d({ center: [d.lon, d.lat], zoom: z, bearing: brg, duration: 1400, padding: pad(), offset: liftOffset({ lat: d.lat, height: Z.above }, 62, z) });
+      setCam('orbit', true);
     }
     if (a === 'fitdrone' && d) {
       const pts = [[d.lon, d.lat]]; if (hasPilot(d)) pts.push([d.pilotLon, d.pilotLat]);
@@ -1846,7 +2117,8 @@
     if (p && hasPos(d)) {
       const m = dist(p.lat, p.lon, d.lat, d.lon), br = bearing(p.lat, p.lon, d.lat, d.lon);
       setF(inner, 'fromme', `${fmtDist(m)} <span style="color:var(--muted);font-size:.7em">${compass(br)}</span>`);
-      setF(inner, 'fromsub', p.heading != null ? 'Arrow points from the way you are facing' : `Bearing ${Math.round(br)}° from north`);
+      const L = lookFrom(p, d), up = L.elev != null ? ` · look ${Math.max(0, Math.round(L.elev))}° up` : '';
+      setF(inner, 'fromsub', (p.heading != null ? 'Arrow points from the way you are facing' : `Bearing ${Math.round(br)}° from north`) + up);
       const a = inner.querySelector('[data-f="arrow"] svg');
       if (a) a.style.transform = `rotate(${Math.round(br - (p.heading != null ? p.heading : 0))}deg)`;
     } else {
@@ -2042,8 +2314,8 @@
   // ------------------------------------------------------------------ buttons
   $('#btn-3d').addEventListener('click', () => {
     haptic();
-    if (S.mode3d) map.easeTo({ pitch: 0, bearing: 0, duration: 900 });
-    else go3d({ bearing: map.getBearing() || -20, zoom: Math.max(map.getZoom(), 14.5) });
+    if (S.mode3d) { setCam(null); map.easeTo({ pitch: 0, bearing: 0, duration: 900 }); }
+    else { CAM.easeUntil = performance.now() + 3400; go3d({ bearing: map.getBearing() || -20, zoom: Math.max(map.getZoom(), 14.5) }); setCam(camTarget() ? 'orbit' : 'free', true); }
   });
   $('#btn-locate').addEventListener('click', () => {
     haptic();
@@ -2268,6 +2540,7 @@
     const bb = pts.reduce((b, q) => [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])], [180, 90, -180, -90]);
     map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad(), maxZoom: 17, duration: 900 });
     S.rp.raf = requestAnimationFrame(rpTick);
+    if (S.mode3d) setCam('orbit', true);
     haptic();
   }
   function stopReplay(quiet) {
@@ -2284,6 +2557,7 @@
     else if (fr.kind === 'drone' && S.st.drones.some(x => x.id === fr.sel)) { S.kind = 'drone'; S.sel = fr.sel; }
     else { S.kind = null; S.sel = null; }
     renderStatus(); renderSheet(); renderMap();
+    if (S.mode3d) setCam(camTarget() ? 'orbit' : 'free', true);
   }
   function rpTick(now) {
     const R = S.rp; if (!R) return;
@@ -2304,10 +2578,11 @@
     S.st = { t: R.t, demo: L.demo, usb: L.usb, me: L.me, drones: [d], aircraft: [], settings: L.settings };
     S.t = R.t;
     if (S.mapReady) renderMap();
-    if (S.follow && !S.touching && !map.isMoving() && hasPos(d))
+    if (S.follow && !S.mode3d && !S.touching && !map.isMoving() && hasPos(d))
       map.easeTo({ center: [d.lon, d.lat], duration: 0, padding: pad(), offset: liftOffset(d, map.getPitch(), map.getZoom()) });
     if (sheetToo) { R.lastSheet = R.lastMap; R.sheetDirty = false; renderSheet(); } else R.sheetDirty = true;
     rpBar();
+    R.ms = (R.ms || 0) * 0.9 + (performance.now() - R.lastMap) * 0.1;   // average cost of one replay frame (for debugging)
   }
   function rpProfile(f, cls) {   // height over the whole flight, behind the timeline
     const P = f.pts, t0 = f.t0, dur = Math.max(1, f.t1 - t0), W = 300, H = 38, hmax = Math.max(10, f.maxH) * 1.12;
