@@ -139,6 +139,81 @@
     return s + '</svg>';
   }
   const DRONE_SVG = droneSvg();
+
+  // ---------- spray and cargo drones, recognisable at a glance (Jason 2026-11-11: "use more realistic drone icons ... so that you
+  // could look at it and tell, oh, that's a T50, or oh, that's a T70, or oh, that's a T100"). From DJI's spec pages: three
+  // outlines (six arms; four single rotors; four arms with stacked twin rotors), scaled by the real size, with the model number on
+  // a plate, since within a family the real top views are too alike to tell apart (T40 vs T50 differ only in sensors).
+  //   n arms, coax = stacked rotor pairs, k = rotor radius / arm length, s = size (T70P, 3.5 m, = 1)
+  const AG = {
+    T10: { n: 4, coax: false, k: 0.57, s: 0.56 }, T16: { n: 6, coax: false, k: 0.45, s: 0.71 }, T20: { n: 6, coax: false, k: 0.45, s: 0.71 },
+    T30: { n: 6, coax: false, k: 0.45, s: 0.81 }, T20P: { n: 4, coax: false, k: 0.63, s: 0.89 }, T40: { n: 4, coax: true, k: 0.62, s: 0.89 },
+    T25: { n: 4, coax: false, k: 0.66, s: 0.76 }, T25P: { n: 4, coax: false, k: 0.66, s: 0.77 }, T50: { n: 4, coax: true, k: 0.62, s: 0.88 },
+    T70P: { n: 4, coax: false, k: 0.645, s: 1 }, T100: { n: 4, coax: true, k: 0.675, s: 0.92, lidar: true },
+    FC30: { n: 4, coax: true, k: 0.62, s: 0.88, cargo: true }, FC100: { n: 4, coax: true, k: 0.675, s: 0.92, cargo: true },
+  };
+  function agSvg(plate, sp) {
+    const c = 100, F = 196 * (0.78 + 0.22 * sp.s);
+    const angs = sp.n === 6 ? [30, 90, 150, 210, 270, 330] : [45, 135, 225, 315];
+    const L = F / 2 / ((sp.n === 6 ? 1 : 0.7071) + sp.k), R = sp.k * L;
+    const M = angs.map(a => [c + L * Math.sin(rad(a)), c - L * Math.cos(rad(a)), a]);
+    const bw = L * (sp.n === 6 ? 0.66 : 0.6), bl = L * (sp.n === 6 ? 0.92 : 1.02), f1 = v => v.toFixed(1);
+    const blade = (x, y, r, rot) => `<path class="blade" transform="rotate(${rot} ${f1(x)} ${f1(y)})" d="M${f1(x - r)} ${f1(y)}C${f1(x - r * .57)} ${f1(y - 6)} ${f1(x - 6)} ${f1(y - 4.5)} ${f1(x)} ${f1(y)}` +
+      `C${f1(x + 6)} ${f1(y + 4.5)} ${f1(x + r * .57)} ${f1(y + 6)} ${f1(x + r)} ${f1(y)}C${f1(x + r * .57)} ${f1(y + 2)} ${f1(x + 6)} ${f1(y + 1.2)} ${f1(x)} ${f1(y)}` +
+      `C${f1(x - 6)} ${f1(y - 1.2)} ${f1(x - r * .57)} ${f1(y - 2)} ${f1(x - r)} ${f1(y)}Z" fill="${rot ? '#aab3bf' : '#e3e8ee'}"/>`;
+    let s = '<svg class="dsvg ag" viewBox="0 0 200 200" aria-hidden="true">';
+    for (const [x, y] of M) s += `<path d="M${c} ${c}L${f1(x)} ${f1(y)}" stroke="url(#g-arm)" stroke-width="${sp.n === 6 ? 9 : 11}" stroke-linecap="round"/>`;
+    // airframe: dark chassis, white spray tank (or a cargo bay) in front, battery behind, radar at both ends
+    s += `<rect x="${f1(c - bw / 2)}" y="${f1(c - bl / 2)}" width="${f1(bw)}" height="${f1(bl)}" rx="${f1(bw * .3)}" fill="url(#g-shell)"/>`;
+    s += sp.cargo ? `<rect x="${f1(c - bw * .38)}" y="${f1(c - bl * .38)}" width="${f1(bw * .76)}" height="${f1(bl * .5)}" rx="4" fill="#3a3326" stroke="#e0a83a" stroke-width="2"/>`
+      : `<rect x="${f1(c - bw * .37)}" y="${f1(c - bl * .38)}" width="${f1(bw * .74)}" height="${f1(bl * .52)}" rx="${f1(bw * .2)}" fill="url(#g-body)"/>`;
+    s += `<rect x="${f1(c - bw * .34)}" y="${f1(c + bl * .2)}" width="${f1(bw * .68)}" height="${f1(bl * .2)}" rx="3" fill="#1b2027"/><rect x="${f1(c - bw * .24)}" y="${f1(c + bl * .27)}" width="${f1(bw * .48)}" height="2.6" rx="1.3" fill="var(--acc)"/>`;
+    s += `<rect x="${f1(c - bw * .24)}" y="${f1(c - bl / 2 - 5)}" width="${f1(bw * .48)}" height="9" rx="4" fill="#262c35"/><rect x="${f1(c - bw * .2)}" y="${f1(c + bl / 2 - 4)}" width="${f1(bw * .4)}" height="8" rx="4" fill="#262c35"/>`;
+    if (sp.lidar) s += `<circle cx="${c}" cy="${f1(c - bl / 2 - 1)}" r="5.2" fill="url(#g-lens)"/>`;
+    for (const [x, y] of M) s += `<circle cx="${f1(x)}" cy="${f1(y)}" r="${sp.coax ? 11 : 9}" fill="url(#g-shell)"/><circle cx="${f1(x)}" cy="${f1(y)}" r="${sp.coax ? 7.5 : 6.5}" fill="url(#g-motor)"/>` +
+      (sp.coax ? `<circle cx="${f1(x)}" cy="${f1(y)}" r="${f1(R * .5)}" fill="none" stroke="#c9d1db" stroke-width="1.6" opacity=".55"/>` : '');
+    M.forEach(([x, y, a], i) => {   // rotor discs and blades; stacked pairs show a second, darker blade set turning the other way
+      const cw = i % 2 === 0;
+      if (sp.coax) s += `<g class="prop ${cw ? 'l' : 'r'}" style="transform-origin:${f1(x)}px ${f1(y)}px">${blade(x, y, R * .96, 90)}</g>`;
+      s += `<g class="prop ${cw ? 'r' : 'l'}" style="transform-origin:${f1(x)}px ${f1(y)}px"><circle cx="${f1(x)}" cy="${f1(y)}" r="${f1(R)}" fill="url(#g-disc)"/>${blade(x, y, R, 0)}</g>` +
+        `<circle cx="${f1(x)}" cy="${f1(y)}" r="3.6" fill="#1a1e24"/>`;
+    });
+    M.forEach(([x, y]) => {   // nav lights: red at the front, green at the back
+      const red = y < c, lx = x + (x < c ? -1 : 1) * R * .3, ly = y + (red ? -1 : 1) * R * .3;
+      s += `<circle class="led" cx="${f1(lx)}" cy="${f1(ly)}" r="8" fill="url(#g-${red ? 'red' : 'green'})"/>`;
+    });
+    const fs = plate.length > 5 ? 17 : plate.length > 3 ? 21 : 25, pw = Math.max(46, plate.length * fs * .64 + 14);
+    s += `<rect x="${f1(c - pw / 2)}" y="${c - 15}" width="${f1(pw)}" height="30" rx="9" fill="rgba(8,12,18,.86)" stroke="var(--acc)" stroke-width="2"/>` +
+      `<text x="${c}" y="${f1(c + fs * .36)}" text-anchor="middle" font-size="${fs}" font-weight="900" fill="#fff" font-family="Inter,system-ui,sans-serif" letter-spacing="-.5">${plate}</text>`;
+    return s + '</svg>';
+  }
+  /** Icon family from the model name: 'ag:T50/T25' (DJI declares some serial ranges for two models), 'ag:FC30', or 'cam'. */
+  function famOf(d) {
+    const m = modelOf(d);
+    let g = /Agras\s+(T\d+P?)(?:\s+or\s+Agras\s+(T\d+P?))?/i.exec(m);
+    if (g) return 'ag:' + g[1].toUpperCase() + (g[2] ? '/' + g[2].toUpperCase() : '');
+    g = /FlyCart\s*(\d+)/i.exec(m);
+    return g ? 'ag:FC' + g[1] : 'cam';
+  }
+  const ICONS = new Map();
+  function iconSvg(fam) {
+    let s = ICONS.get(fam);
+    if (!s) {
+      if (fam.startsWith('ag:')) {
+        const nm = fam.slice(3).split('/');
+        s = agSvg(nm.length > 1 ? nm[0] + '/' + nm[1].replace(/^T/, '') : nm[0], AG[nm[0]] || AG.T50);
+      } else s = DRONE_SVG;
+      ICONS.set(fam, s);
+    }
+    return s;
+  }
+  function setIcon(el, d, cls) {   // put the right drone picture in el, only when the model changes
+    const fam = famOf(d);
+    if (el.dataset.fam === fam) return;
+    el.dataset.fam = fam; el.innerHTML = iconSvg(fam);
+    if (cls) cls.classList.toggle('ag', fam.startsWith('ag:'));
+  }
+  window.RIDicons = { iconSvg, famOf };   // for checking the icons in a browser
   document.querySelector('.banner-icon').innerHTML = DRONE_SVG;
 
   // ------------------------------------------------------------------ map
@@ -1451,6 +1526,7 @@
       m.el.classList.toggle('sel', sel);
       m.el.classList.toggle('flat', S.mode3d);
       m.el.style.zIndex = sel ? 5 : live ? 3 : 1;
+      setIcon(m.img, d, m.el);
       m.hd = iconHeading(d);
       if (m.hd != null || S.mode3d) m.img.style.transform = droneXf(m.hd, b);
       const tag = `<b>${esc(shortModel(d))}</b> · ${ft(d.height)} ft`;
@@ -1927,6 +2003,7 @@
   }
   function updDroneRow(el, d) {
     const live = isLive(d), p = me();
+    setIcon(el.querySelector('.r-icon'), d);
     el.classList.toggle('stale', !live);
     el.style.setProperty('--dc', dcol(d));
     setF(el, 'mph', live ? mph(d.speed) : '—');
@@ -1977,6 +2054,7 @@
   const distHtml = m => fmtDist(m).replace(/ (mi|ft)$/, '<small>$1</small>');
   function updHero(el, d) {
     const live = isLive(d), p = me(), pil = hasPilot(d);
+    setIcon(el.querySelector('.hc-icon'), d);
     el.dataset.id = d.id;
     el.classList.toggle('stale', !live);
     el.style.setProperty('--dc', dcol(d));
@@ -2464,7 +2542,7 @@
   function rpRow(f) {
     const c = CMAP[f.droneId];
     return `<div class="row rp-row" data-kind="flight" data-id="${esc(f.id)}" style="--dc:${PAL[c == null ? 0 : c]}">
-      <div class="r-icon">${DRONE_SVG}</div>
+      <div class="r-icon">${iconSvg(famOf(f))}</div>
       <div class="r-main"><div class="r-title"><span>${esc(modelOf(f))}</span></div>
         <div class="rp-sub">${clock(f.t0)} – ${clock(f.t1)} · ${rpMin(f.t1 - f.t0)}</div>
         <div class="rp-sub2">Up to ${ft(f.maxH)} ft · ${fmtDist(f.distM)} flown${f.top ? ` · ${mph(f.top)} mph top` : ''}</div></div>
