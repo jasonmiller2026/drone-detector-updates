@@ -1708,10 +1708,16 @@
     const k = S.rp ? 1 : 1 - Math.exp(-dt / 0.3);
     if (!CAM.c || CAM.drag) CAM.c = w.center.slice();
     else { CAM.c[0] += (w.center[0] - CAM.c[0]) * k; CAM.c[1] += (w.center[1] - CAM.c[1]) * k; }
+    if (now - CAM.hintAt > 500) { CAM.hintAt = now; camHint(); }
+    // nothing to change (a hovering drone, no spin): leave the map alone instead of redrawing every frame (battery)
+    const cc = map.getCenter(), lp = CAM.lastPut;
+    const same = lp && Math.abs(lp.c[0] - CAM.c[0]) < 2e-7 && Math.abs(lp.c[1] - CAM.c[1]) < 2e-7 && Math.abs(angDiff(map.getBearing(), w.bearing)) < 0.02 &&
+      Math.abs(map.getPitch() - w.pitch) < 0.02 && Math.abs(map.getZoom() - w.zoom) < 0.001 && Math.abs(lp.cc[0] - cc.lng) < 1e-9 && Math.abs(lp.cc[1] - cc.lat) < 1e-9;
+    if (same) return;
     CAM.moving = true;
     map.easeTo({ center: CAM.c, zoom: w.zoom, bearing: w.bearing, pitch: w.pitch, offset: w.offset || [0, 0], padding: pad(), duration: 0 });
     CAM.moving = false;
-    if (now - CAM.hintAt > 500) { CAM.hintAt = now; camHint(); }
+    const c2 = map.getCenter(); CAM.lastPut = { c: CAM.c.slice(), cc: [c2.lng, c2.lat] };
   }
   function camRun() { if (camLocked() && !CAM.raf) { CAM.last = 0; CAM.raf = requestAnimationFrame(camFrame); } }
   function camGestures() {   // locked on a drone: one finger circles it, pinch and wheel zoom about it
