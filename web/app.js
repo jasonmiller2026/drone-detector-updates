@@ -1158,7 +1158,7 @@
         if (map.getLayer(f[prev].id)) map.setPaintProperty(f[prev].id, 'raster-opacity', 0);
         if (map.getLayer(f[CLOUDS.i].id)) map.setPaintProperty(f[CLOUDS.i].id, 'raster-opacity', 0.9);
         const el = $('#cloud-time'), newestNow = CLOUDS.i === f.length - 1;
-        el.innerHTML = `<b>Clouds</b> ${clock(f[CLOUDS.i].t.getTime() / 1000)}${newestNow ? ' · newest' : ''}`;
+        el.innerHTML = `<b>Clouds</b> ${clock(f[CLOUDS.i].t.getTime() / 1000)}${newestNow ? ' · newest' : ''}<span class="ct-x" aria-label="Turn clouds off">✕</span>`;
         el.classList.remove('hidden'); placeCloudTime();
       };
       map.setPaintProperty(CLOUDS.frames[CLOUDS.i].id, 'raster-opacity', 0.9);
@@ -1202,10 +1202,18 @@
   $('#laanc-toggle').addEventListener('change', e => { AVX.laanc = e.target.checked; store.set('laanc', AVX.laanc); haptic(); loadAviation(true);
     if (AVX.laanc && map.getZoom() < 11) toast('Zoom in near an airport to see the LAANC ceiling squares', 3500); });
   $('#stadium-toggle').addEventListener('change', e => { AVX.stadiums = e.target.checked; store.set('stadiums', AVX.stadiums); haptic(); loadAviation(true); });
-  $('#clouds-toggle').addEventListener('change', e => {
-    CLOUDS.on = e.target.checked; store.set('clouds', CLOUDS.on); haptic(); loadClouds();
-    if (CLOUDS.on) toast('Tap anywhere on the map to see the cloud cover there', 3500); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
-  });
+  // one switch for the clouds, from the cloud button by the map, the layers sheet, or the ✕ on the clouds time chip
+  // (Jason 2026-11-11: "a toggle that we can turn on the cloud layer and turn it off ... so you can see the detail better")
+  function setClouds(on) {
+    CLOUDS.on = on; store.set('clouds', on); haptic(); loadClouds();
+    $('#clouds-toggle').checked = on; $('#btn-clouds').classList.toggle('on', on);
+    if (on) toast('Clouds on. Tap the map to see the cloud cover there', 3000);
+    else { toast('Clouds off', 1400); if (cloudPop) { cloudPop.remove(); cloudPop = null; } }
+  }
+  $('#btn-clouds').classList.toggle('on', CLOUDS.on);
+  $('#clouds-toggle').addEventListener('change', e => setClouds(e.target.checked));
+  $('#btn-clouds').addEventListener('click', () => setClouds(!CLOUDS.on));
+  $('#cloud-time').addEventListener('click', () => setClouds(false));
   setInterval(() => { if (CLOUDS.on && Date.now() - CLOUDS.at > 10 * 60000) loadClouds(); }, 60000);   // pick up new pictures
 
   // ------------------------------------------------------------------ toast, problem log, report
@@ -2027,6 +2035,11 @@
     document.body.appendChild(probe);
     const insets = () => { const cs = getComputedStyle(probe); RID.setInsets(parseFloat(cs.paddingTop) || 0, parseFloat(cs.paddingBottom) || 0); };
     insets(); addEventListener('resize', () => setTimeout(insets, 150));
+    // a home-screen page on the iPhone resumes the old copy when reopened: look for newer screens whenever it comes back
+    let webV = null;
+    const checkV = () => fetch('version.json', { cache: 'no-store' }).then(r => r.json())
+      .then(j => { if (webV == null) webV = j.web; else if (j.web !== webV) location.reload(); }).catch(() => { });
+    checkV(); document.addEventListener('visibilitychange', () => { if (!document.hidden) checkV(); });
     let gps = null;
     if (navigator.geolocation) navigator.geolocation.watchPosition(
       p => { gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading, age: 0 }; },
