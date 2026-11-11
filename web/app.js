@@ -228,7 +228,7 @@
     if (ap.length) { S.apt = ap[0].properties; S.aptLL = ap[0].geometry.coordinates; select('apt', S.apt.code || S.apt.IDENT, false); return; }
     const lines = S.settings.airspace !== false ? avLines(e.point) : [];
     if (lines.length || CLOUDS.on) cloudAt(e.lngLat, lines.slice(0, 5)); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
-    if (S.sel) deselect(); else if (S.sheet !== 'peek') setSheet('peek');
+    if (S.sel) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
   });
   map.on('dragstart', () => { if (S.follow) { S.follow = false; S.view = ''; renderSheet(); } });
   map.on('rotate', rotateMarkers);
@@ -295,7 +295,7 @@
   }
 
   function pad() {
-    const vis = Math.max(116, sheet.offsetHeight - stops()[S.sheet]) + S.safeBottom + 6;   // where the sheet is going, not mid-slide
+    const vis = Math.max(56, sheet.offsetHeight - stops()[S.sheet]) + S.safeBottom + 6;   // where the sheet is going, not mid-slide
     return { top: S.safeTop + 90, bottom: Math.min(vis + 56, window.innerHeight * 0.66), left: 44, right: 80 };
   }
 
@@ -1377,22 +1377,30 @@
   function sheetTop() { return sheet.getBoundingClientRect().top; }
   function stops() {
     const H = sheet.offsetHeight, vh = window.innerHeight;
-    return { peek: Math.max(0, H - (S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
+    return { mini: Math.max(0, H - miniH()), peek: Math.max(0, H - (S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
   }
+  // mini = just the handle and the header line ("Drones · 23.0 mi SE to pilot · 1 live")
+  function miniH() {
+    const h = inner.querySelector(S.sel ? '.det-head' : '.sh-head');
+    return h ? Math.max(48, Math.round(h.getBoundingClientRect().bottom - sheet.getBoundingClientRect().top + 6)) : 66;
+  }
+  const SHEET_ORDER = ['mini', 'peek', 'half', 'full'];
   // The part of the sheet slid below its resting edge is clipped off, so a closed sheet floats above
   // Android's navigation buttons with rounded corners instead of showing through behind them.
   const placeSheet = y => { sheet.style.transform = `translateY(${y}px)`; sheet.style.clipPath = `inset(0 0 ${y}px 0 round 30px)`; };
   function setSheet(name) {
     if (S.sheet !== name && drag === null) haptic();   // one light tick per snap
     S.sheet = name;
-    placeSheet(stops()[name]);
-    inner.style.overflowY = name === 'peek' ? 'hidden' : 'auto';
-    if (name === 'peek') inner.scrollTop = 0;
+    const y = stops()[name]; S.sheetY = y;
+    placeSheet(y);
+    sheet.classList.toggle('is-mini', name === 'mini');
+    inner.style.overflowY = name === 'peek' || name === 'mini' ? 'hidden' : 'auto';
+    if (name === 'peek' || name === 'mini') { inner.scrollTop = 0; store.set('sheetMini', name === 'mini'); }
   }
   let drag = null;
   sheet.addEventListener('pointerdown', e => {
     if (e.target.closest('button, .row, input, label')) return;
-    const handle = e.target.closest('.grab, .sh-head, .det-head') || S.sheet === 'peek';
+    const handle = e.target.closest('.grab, .sh-head, .det-head') || S.sheet === 'peek' || S.sheet === 'mini';
     if (!handle) return;
     const m = new DOMMatrix(getComputedStyle(sheet).transform);
     drag = { y0: e.clientY, t0: performance.now(), base: m.m42, y: m.m42, moved: false, id: e.pointerId, grab: !!e.target.closest('.grab') };
@@ -1407,12 +1415,13 @@
     if (!drag) return;
     const d = drag; drag = null;
     sheet.classList.remove('dragging');
-    if (!d.moved) { if (d.grab) setSheet(S.sheet === 'peek' ? 'half' : S.sheet === 'half' ? 'full' : 'half'); return; }
-    const v = (e.clientY - d.y0) / Math.max(1, performance.now() - d.t0), st = stops();
+    // a tap: the slim bar opens back up; the handle steps mini -> peek -> half -> full
+    if (!d.moved) { if (d.grab || S.sheet === 'mini') setSheet({ mini: 'peek', peek: 'half', half: 'full', full: 'half' }[S.sheet]); return; }
+    const v = (e.clientY - d.y0) / Math.max(1, performance.now() - d.t0), st = stops(), i = SHEET_ORDER.indexOf(S.sheet);
     let target;
-    if (v > 0.55) target = S.sheet === 'full' ? 'half' : 'peek';
-    else if (v < -0.55) target = S.sheet === 'peek' ? 'half' : 'full';
-    else target = ['peek', 'half', 'full'].reduce((b, k) => Math.abs(st[k] - d.y) < Math.abs(st[b] - d.y) ? k : b, 'peek');
+    if (v > 0.55) target = SHEET_ORDER[Math.max(0, i - 1)];          // flick down: one size smaller
+    else if (v < -0.55) target = SHEET_ORDER[Math.min(3, i + 1)];    // flick up: one size bigger
+    else target = SHEET_ORDER.reduce((b, k) => Math.abs(st[k] - d.y) < Math.abs(st[b] - d.y) ? k : b, 'peek');
     setSheet(target);
   };
   sheet.addEventListener('pointerup', endDrag);
@@ -1429,7 +1438,7 @@
   function select(kind, id, fly) {
     S.kind = kind; S.sel = id; S.view = '';
     haptic();
-    if (S.sheet === 'peek') setSheet('half');
+    if (S.sheet === 'peek' || S.sheet === 'mini') setSheet('half');
     inner.scrollTop = 0;
     renderSheet();
     if (S.mapReady) renderMap();
@@ -1475,7 +1484,7 @@
 
   // ---------- list view
   const LIST = `
-    <div class="sh-head"><div class="sh-title">Drones</div><div class="sh-sub" data-f="count"></div></div>
+    <div class="sh-head"><div class="sh-title">Drones</div><div class="sh-sub"><span class="sh-near" data-f="near"></span><span data-f="count"></span></div></div>
     <div class="empty hidden" data-f="empty"><div class="radar"></div><div><div class="empty-title">Listening for Remote ID</div>
       <div class="empty-sub" data-f="emptysub">Drones show up here the moment the receiver hears them.</div></div></div>
     <div class="row hero-card hidden" data-f="hero" data-kind="drone">
@@ -1618,8 +1627,20 @@
     S.heroId = hero ? hero.id : null;
     hbox.classList.toggle('hidden', !hero);
     if (hero) updHero(hbox, hero);
+    let near = '';
+    if (hero && p && (hasPilot(hero) || hasPos(hero))) {
+      const pil = hasPilot(hero), la = pil ? hero.pilotLat : hero.lat, lo = pil ? hero.pilotLon : hero.lon;
+      near = `${distHtml(dist(p.lat, p.lon, la, lo)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()} ${compass(bearing(p.lat, p.lon, la, lo))} to ${pil ? 'pilot' : 'drone'}`;
+    }
+    setF(inner, 'near', near ? esc(near) + ' · ' : '');
+    // a drone that was never seen before opens the slim bar back up so you notice it
+    const first = !S.seen; S.seen = S.seen || new Set();   // drones already there when the app opens don't count as new
+    const fresh = !first && drones.some(d => isLive(d) && !S.seen.has(d.id));
+    drones.forEach(d => S.seen.add(d.id));
+    if (fresh && S.sheet === 'mini' && drag === null) setSheet('peek');
     syncRows(inner.querySelector('[data-f="drones"]'), drones.slice(1), d => d.id, makeDroneRow, updDroneRow);
     fitPeek();
+    if (S.sheet === 'mini' && drag === null && stops().mini !== S.sheetY) setSheet('mini');
     let acs = S.settings.aircraft ? (st.aircraft || []).filter(a => !a.ground) : [];
     if (p) acs = acs.map(a => [a, dist(p.lat, p.lon, a.lat, a.lon)]).sort((x, y) => x[1] - y[1]).map(x => x[0]);
     inner.querySelector('[data-f="achead"]').classList.toggle('hidden', !acs.length);
@@ -1943,11 +1964,11 @@
       if (!imgModal.classList.contains('hidden')) { imgModal.classList.add('hidden'); return true; }
       if (!repModal.classList.contains('hidden')) { repModal.classList.add('hidden'); return true; }
       if (S.sel) { deselect(); return true; }
-      if (S.sheet !== 'peek') { setSheet('peek'); return true; }
+      if (S.sheet === 'half' || S.sheet === 'full') { setSheet('peek'); return true; }
       return false;
     },
   };
-  setSheet('peek');
+  setSheet(store.get('sheetMini') ? 'mini' : 'peek');
 
   // ------------------------------------------------------------------ browser preview (no Android): replay the demo flight
   const DEV = { demo: true };

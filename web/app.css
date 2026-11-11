@@ -730,3 +730,8 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 .cloud-pop[class*="-left"]::before, .cloud-pop[class*="-left"]::after { left: 24px; }
 .cloud-pop[class*="-right"]::before, .cloud-pop[class*="-right"]::after { left: calc(100% - 24px); }
 [data-theme="light"] .cloud-pop::before { background: linear-gradient(180deg, rgba(15,23,42,.75), rgba(15,23,42,.45)); box-shadow: 0 0 0 1px rgba(255,255,255,.5); }
+
+/* v0.2.7 mini sheet: swipe the bottom card down to a slim bar; it shows the nearest drone's distance; tap or swipe up to open it */
+.sh-near { display: none; color: var(--text); font-weight: 650; }
+#sheet.is-mini .sh-near { display: inline; }
+#sheet.is-mini .sh-head { cursor: pointer; }
