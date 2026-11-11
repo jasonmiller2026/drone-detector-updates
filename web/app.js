@@ -79,6 +79,14 @@
 
   const ICON = {
     person: '<svg viewBox="0 0 24 24" fill="#fff"><circle cx="12" cy="7.3" r="3.7"/><path d="M4.3 20.6c.7-4.3 3.7-6.8 7.7-6.8s7 2.5 7.7 6.8z"/></svg>',
+    // map pilot: a standing person holding a controller, in the drone's colour (Jason: "just a human icon, not a big round blob")
+    pilotFig: '<svg viewBox="0 0 30 44" aria-hidden="true">' +
+      '<path d="M10.2 25.5 11 39.6h3.3l.7-10.4.7 10.4h3.3l.8-14.1z" fill="color-mix(in srgb, currentColor 55%, #111)"/>' +
+      '<path d="M9.4 13.6c1.6-1.3 3.6-1.9 5.6-1.9s4 .6 5.6 1.9l.9 12.3c-2.1.8-4.3 1.2-6.5 1.2s-4.4-.4-6.5-1.2z" fill="currentColor"/>' +
+      '<path d="M10 14.6 8.2 20.6l3.3 1.3M20 14.6l1.8 6-3.3 1.3" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M11.4 19.4 10.6 16.2M18.6 19.4l.8-3.2" stroke="#e5e7eb" stroke-width="1" stroke-linecap="round"/>' +
+      '<rect x="10.4" y="19.2" width="9.2" height="4.4" rx="1.3" fill="#1f2937" stroke="#f1f5f9" stroke-width=".9"/>' +
+      '<circle cx="15" cy="6.4" r="4.4" fill="currentColor"/><path d="M11 5.6c.6-2.4 2.2-3.6 4-3.6s3.4 1.2 4 3.6" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="1"/></svg>',
     back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     arrow: '<svg viewBox="0 0 24 24"><path d="M12 2.3l6.8 18-6.8-3.8-6.8 3.8z" fill="#60a5fa"/></svg>',
     hdg: '<svg viewBox="0 0 24 24"><path d="M12 3l6 16-6-3.4L6 19z" fill="#ffb37a"/></svg>',
@@ -243,7 +251,16 @@
     if (lines.length || CLOUDS.on) cloudAt(e.lngLat, lines.slice(0, 5)); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
     if (S.sel) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
   });
-  map.on('dragstart', () => { if (S.follow) { S.follow = false; S.view = ''; renderSheet(); } });
+  // a one-finger drag takes over from Follow; two fingers (turn, tilt, pinch) keep following
+  map.on('dragstart', e => {
+    const t = e.originalEvent && e.originalEvent.touches;
+    if (t && t.length > 1) return;
+    if (S.follow) { S.follow = false; S.view = ''; renderSheet(); }
+  });
+  const cv = map.getCanvasContainer();
+  cv.addEventListener('touchstart', () => { S.touching = true; }, { passive: true });
+  cv.addEventListener('touchend', e => { if (!e.touches.length) S.touching = false; }, { passive: true });
+  cv.addEventListener('touchcancel', () => { S.touching = false; }, { passive: true });
   map.on('rotate', rotateMarkers);
   // Switch 3D on/off only when a tilt has finished: changing terrain mid-animation cancelled the tilt
   // and left the map stuck nearly flat in "3D" (seen on the S24 screen recording).
@@ -1241,10 +1258,11 @@
     if (!m) {
       const el = document.createElement('div');
       el.className = 'm-pilot';
-      el.innerHTML = `<div class="pin">${ICON.person}</div><div class="tag"></div>`;
+      el.innerHTML = `<div class="pin">${ICON.pilotFig}</div><div class="tag"></div>`;
       el.addEventListener('click', e => { e.stopPropagation(); select('drone', d.id, false); flyTo(d.pilotLat, d.pilotLon, 16); });
       m = { el, tag: el.querySelector('.tag') };
-      m.marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([d.pilotLon, d.pilotLat]).addTo(map);
+      // feet on the pilot's spot (the figure stands up from it, also when the map is tilted)
+      m.marker = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, 2] }).setLngLat([d.pilotLon, d.pilotLat]).addTo(map);
       mk.pilot.set(d.id, m);
     }
     return m;
@@ -1379,10 +1397,18 @@
     const p = me();
     if (p) { map.jumpTo({ center: [p.lon, p.lat], zoom: 14 }); S.fitted = true; }
   }
+  // In a tilt a drone at height h shows h*sin(pitch)/(metres per pixel) above its ground spot; put the ground spot that much
+  // (a bit over half) below mid-screen so the floating drone itself sits in the middle
+  function liftOffset(d, pitch, zoom) {
+    if (pitch < 15) return [0, 0];
+    const mppz = 40075016.7 * Math.cos(rad(d.lat)) / (512 * 2 ** zoom);
+    return [0, Math.round(Math.min(260, Math.max(0, d.height || 0) * Math.sin(rad(pitch)) / mppz) * 0.55)];
+  }
   function followCam() {
-    if (!S.follow || S.kind !== 'drone') return;
+    // never fight fingers that are turning or tilting the map, or a camera move already running (it cancelled the 3D tilt)
+    if (!S.follow || S.kind !== 'drone' || S.touching || map.isMoving()) return;
     const d = S.st.drones.find(x => x.id === S.sel);
-    if (d && hasPos(d)) map.easeTo({ center: [d.lon, d.lat], duration: 900, padding: pad() });
+    if (d && hasPos(d)) map.easeTo({ center: [d.lon, d.lat], duration: 900, padding: pad(), offset: liftOffset(d, map.getPitch(), map.getZoom()) });
   }
 
   // ------------------------------------------------------------------ bottom sheet
@@ -1482,7 +1508,12 @@
     if (a === 'view3d' && d && hasPos(d)) {
       const p = me();
       const brg = p ? bearing(p.lat, p.lon, d.lat, d.lon) : map.getBearing();
-      go3d({ center: [d.lon, d.lat], zoom: Math.max(map.getZoom(), 16), bearing: brg, duration: 1400, padding: pad() });
+      // give the 3D scene the screen, and aim so the floating drone (not the ground under it) lands mid-screen: in a 62 deg tilt a
+      // drone at height h sits h*sin(62)/(metres per pixel) above its ground spot (it ended up at the top edge, under the header)
+      if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
+      S.follow = true; S.view = ''; renderSheet();   // 3D view keeps the drone in frame as it flies
+      const z = Math.max(map.getZoom(), 16);
+      go3d({ center: [d.lon, d.lat], zoom: z, bearing: brg, duration: 1400, padding: pad(), offset: liftOffset(d, 62, z) });
     }
     if (a === 'fitdrone' && d) {
       const pts = [[d.lon, d.lat]]; if (hasPilot(d)) pts.push([d.pilotLon, d.pilotLat]);
