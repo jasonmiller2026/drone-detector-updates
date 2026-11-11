@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Drone Detector</title>
+<!-- iPhone: Add to Home Screen opens it full screen like an app -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Drone Detector">
+<meta name="theme-color" content="#0a0d12">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<link rel="stylesheet" href="app.css">
+<script>try { var g = JSON.parse(localStorage.getItem("rid.glassTone")), t = JSON.parse(localStorage.getItem("rid.theme")); if (g != null ? g < 50 : t === "light") document.documentElement.dataset.theme = "light"; } catch (e) { }</script>
+</head>
+<body>
+<!-- shared paint for the drone icons -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <radialGradient id="g-motor" cx="38%" cy="32%" r="72%"><stop offset="0" stop-color="#eef2f6"/><stop offset=".42" stop-color="#8a94a0"/><stop offset="1" stop-color="#262b33"/></radialGradient>
+  <radialGradient id="g-disc" r="50%"><stop offset="0" stop-color="#ffffff" stop-opacity="0"/><stop offset=".6" stop-color="#e8eef6" stop-opacity=".07"/><stop offset=".9" stop-color="#e8eef6" stop-opacity=".30"/><stop offset="1" stop-color="#e8eef6" stop-opacity=".04"/></radialGradient>
+  <linearGradient id="g-arm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#59626e"/><stop offset=".5" stop-color="#2c323b"/><stop offset="1" stop-color="#14181d"/></linearGradient>
+  <linearGradient id="g-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbfcfd"/><stop offset=".5" stop-color="#d3d9e0"/><stop offset="1" stop-color="#8f99a5"/></linearGradient>
+  <linearGradient id="g-shell" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#454c57"/><stop offset="1" stop-color="#14181d"/></linearGradient>
+  <radialGradient id="g-lens" cx="34%" cy="32%" r="68%"><stop offset="0" stop-color="#b8f0ff"/><stop offset=".3" stop-color="#2a86c4"/><stop offset=".75" stop-color="#0a2a45"/><stop offset="1" stop-color="#02070d"/></radialGradient>
+  <filter id="liquid" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="0.011 0.017" numOctaves="2" seed="11" result="n"/>
+    <feGaussianBlur in="n" stdDeviation="3" result="b"/>
+    <feDisplacementMap in="SourceGraphic" in2="b" scale="28" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+  <linearGradient id="g-glassarrow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".95"/><stop offset=".45" stop-color="#cfefff" stop-opacity=".55"/><stop offset="1" stop-color="#7dd3fc" stop-opacity=".35"/></linearGradient>
+  <radialGradient id="g-red"><stop offset="0" stop-color="#ff5a5a" stop-opacity=".95"/><stop offset="1" stop-color="#ff5a5a" stop-opacity="0"/></radialGradient>
+  <radialGradient id="g-green"><stop offset="0" stop-color="#4dff8f" stop-opacity=".95"/><stop offset="1" stop-color="#4dff8f" stop-opacity="0"/></radialGradient>
+</defs></svg>
+<div id="map"></div>
+<div id="cloud-time" class="cloud-time glass hidden"></div>
+
+<header id="top">
+  <div class="brand glass liquid" id="brand">
+    <div class="logo"><img src="img/brand-mark.png" alt=""></div>
+    <div class="brand-text">
+      <div class="brand-name">Drone Detector</div>
+      <div class="brand-status"><span class="dot" id="st-dot"></span><span id="st-text">Starting…</span></div>
+    </div>
+    <span class="chip demo hidden" id="demo-chip">DEMO</span>
+  </div>
+  <button class="icon-btn glass liquid" id="btn-settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.5A7.6 7.6 0 0 0 7 6.5l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0 0 3l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+<div id="wind" class="wind glass liquid hidden" role="button" aria-label="Wind">
+  <div class="wind-row">
+    <div class="rose" id="wind-rose">
+      <span class="cn">N</span><span class="ce">E</span><span class="cs">S</span><span class="cw">W</span>
+      <svg class="warrow" id="wind-arrow" viewBox="0 0 40 40"><path d="M20 3.5 27.5 19 21.8 17.2V34.5h-3.6V17.2L12.5 19Z" fill="url(#g-glassarrow)" stroke="rgba(255,255,255,.95)" stroke-width="1.1" stroke-linejoin="round"/><path d="M20 7.5 24.2 16.6" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".9"/></svg>
+    </div>
+    <div class="wind-txt"><div class="wind-big"><span id="wind-spd">—</span><small>mph</small><span class="wind-sky hidden" id="wind-sky"></span></div><div class="wind-sub" id="wind-sub">Wind</div></div>
+  </div>
+  <div class="wind-more hidden" id="wind-more"></div>
+</div>
+
+<div id="toast" class="toast glass hidden"></div>
+<div id="google-mark" class="google-mark hidden">Google</div>
+
+<div id="banner" class="banner glass hidden">
+  <div class="banner-icon"><img src="img/drone_live.png" alt=""></div>
+  <div class="banner-text"><div class="banner-title" id="banner-title"></div><div class="banner-body" id="banner-body"></div></div>
+</div>
+
+<div id="controls" class="glass liquid">
+  <button class="ctl" id="btn-layers" aria-label="Map imagery">
+    <svg viewBox="0 0 24 24"><path d="M12 3 2.5 8 12 13l9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m2.5 12 9.5 5 9.5-5M2.5 16l9.5 5 9.5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+  </button>
+  <button class="ctl" id="btn-3d" aria-label="3D view"><span>3D</span></button>
+  <button class="ctl" id="btn-locate" aria-label="My location">
+    <svg viewBox="0 0 24 24"><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>
+  </button>
+  <button class="ctl" id="btn-fit" aria-label="Show all drones, pilots and me">
+    <svg viewBox="0 0 24 24"><path d="M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="8.6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="15.4" cy="8.6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8.6" cy="15.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="15.4" cy="15.4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
+  </button>
+</div>
+
+<section id="sheet" class="glass-solid">
+  <div class="grab" id="grab"><span></span></div>
+  <div id="sheet-inner"></div>
+</section>
+
+<div id="settings" class="modal hidden">
+  <div class="modal-card glass-solid">
+    <div class="modal-head"><div class="modal-title">Settings</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
+    <div class="set-h">General</div>
+    <div class="set-card">
+      <div class="set set-static"><div><div class="set-name">Appearance</div><div class="set-sub">Dark or light panels</div></div>
+        <div class="seg" id="theme-seg" role="radiogroup" aria-label="Appearance"><button data-theme-opt="dark" role="radio">Dark</button><button data-theme-opt="light" role="radio">Light</button></div></div>
+      <div class="set set-static set-col"><div class="set-name">Glass</div><div class="set-sub">Really light on the left, clear in the middle, almost black on the right</div>
+        <div class="slider-row"><span>Light</span><input type="range" id="glass-slider" min="0" max="100" step="1" value="68" aria-label="Glass tone"><span>Dark</span></div></div>
+      <label class="set"><div><div class="set-name">Keep screen on</div><div class="set-sub">For the dash mount</div></div><input type="checkbox" data-set="keepScreenOn"><span class="sw"></span></label>
+      <label class="set"><div><div class="set-name">Alert sound</div><div class="set-sub">Sound with new-drone alerts</div></div><input type="checkbox" data-set="alertSound"><span class="sw"></span></label>
+    </div>
+    <div class="set-h">Map</div>
+    <div class="set-card">
+      <label class="set"><div><div class="set-name">3D flight trail</div><div class="set-sub">Path drawn at the drone's height in 3D view</div></div><input type="checkbox" data-set="trail3d"><span class="sw"></span></label>
+      <label class="set"><div><div class="set-name">Airspace and airports</div><div class="set-sub">FAA Class B, C, D, E and airports</div></div><input type="checkbox" data-set="airspace"><span class="sw"></span></label>
+      <label class="set"><div><div class="set-name">Wind</div><div class="set-sub">Speed and direction where you are (Open-Meteo)</div></div><input type="checkbox" data-set="wind"><span class="sw"></span></label>
+      <label class="set"><div><div class="set-name">Road and place names</div><div class="set-sub">Labels over the aerial map</div></div><input type="checkbox" data-set="labels"><span class="sw"></span></label>
+      <label class="set"><div><div class="set-name">Planes and helicopters</div><div class="set-sub">ADS-B within 15 nm (adsb.lol)</div></div><input type="checkbox" data-set="aircraft"><span class="sw"></span></label>
+    </div>
+    <div class="set-h">Receiver</div>
+    <div class="set-card">
+      <label class="set"><div><div class="set-name">Demo flight</div><div class="set-sub">Replays a real recorded Matrice flight</div></div><input type="checkbox" data-set="demo"><span class="sw"></span></label>
+      <div class="set-buttons"><button class="btn" id="btn-reconnect">Reconnect receiver</button><button class="btn" id="btn-clear">Clear tracks</button></div>
+    </div>
+    <div class="set-h">Google satellite</div>
+    <div class="set-card">
+      <div class="set-key"><div class="set-name">Google Maps API key</div>
+        <div class="set-sub">For Google satellite imagery (Google Map Tiles API). Saved only on this phone.</div>
+        <input id="gkey" type="password" placeholder="Paste your key here" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    </div>
+    <div class="set-h">App updates</div>
+    <div class="set-card">
+      <div class="set-key"><div class="set-sub" id="upd-sub">Checks for updates every 2 minutes</div>
+        <div class="set-buttons"><button class="btn" id="btn-upd-check">Check now</button><button class="btn primary hidden" id="btn-upd-install">Install update</button></div></div>
+    </div>
+    <div class="set-h">Help</div>
+    <div class="set-card">
+      <div class="set-key"><div class="set-name">Report a problem</div><div class="set-sub">Saves a screenshot of the map, the detector data and the time on the phone so it can be looked at later.</div>
+        <div class="set-buttons"><button class="btn" id="btn-report">Report a problem</button></div></div>
+    </div>
+    <div class="set-foot" id="set-foot"></div>
+  </div>
+</div>
+
+<div id="report" class="modal hidden">
+  <div class="modal-card glass-solid">
+    <div class="modal-head"><div class="modal-title">Problem report saved</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
+    <div class="set-sub" style="margin-bottom:12px">A screenshot of the screen, the detector data and the time are saved on the phone. Add a note if you like.</div>
+    <textarea id="report-note" rows="3" placeholder="What looks wrong? (optional)"></textarea>
+    <div class="set-buttons"><button class="btn primary" id="btn-report-save">Done</button></div>
+  </div>
+</div>
+
+<div id="imagery" class="modal hidden">
+  <div class="modal-card glass-solid">
+    <div class="modal-head"><div class="modal-title">Map imagery</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
+    <button class="img-opt" data-base="latest"><img class="thumb" data-thumb="latest" alt="">
+      <div class="img-txt"><div class="set-name">Satellite · latest</div><div class="set-sub" id="cap-latest">Esri World Imagery, newest available</div></div><span class="radio"></span></button>
+    <button class="img-opt" data-base="google"><img class="thumb" data-thumb="google" alt="">
+      <div class="img-txt"><div class="set-name">Google satellite</div><div class="set-sub" id="cap-google">Add your Google Maps API key in Settings to use this.</div></div><span class="radio"></span></button>
+    <button class="img-opt" data-base="ohio"><img class="thumb" data-thumb="ohio" alt="">
+      <div class="img-txt"><div class="set-name">Ohio leaf-off · 3–6 inch <span class="pill leaf">LEAF-OFF</span></div><div class="set-sub" id="cap-ohio">Statewide aerial photos (OSIP III, 2017–2024). Sharpest close-up; Ohio only.</div></div><span class="radio"></span></button>
+    <div class="sh-section">Airspace</div>
+    <label class="set img-toggle"><div><div class="set-name">LAANC ceilings</div><div class="set-sub">FAA grid near airports: the highest you can get approved in each square (zoom in to see)</div></div><input type="checkbox" id="laanc-toggle"><span class="sw"></span></label>
+    <label class="set img-toggle"><div><div class="set-name">Stadium rings</div><div class="set-sub">3 NM no-drone rings that apply during games and events</div></div><input type="checkbox" id="stadium-toggle"><span class="sw"></span></label>
+    <div class="set-sub" style="padding:2px 4px 10px">Always shown with airspace on: Class B, C, D, E with altitude blocks, restricted, prohibited, warning, MOA and alert areas, national-security drone no-fly zones and standing defense TFRs. Live TFRs are not included yet: check the FAA's TFR list before flying.</div>
+    <div class="sh-section">Weather</div>
+    <label class="set img-toggle"><div><div class="set-name">Moving clouds</div><div class="set-sub" id="cap-clouds">Real weather-satellite clouds from the last 2 hours, looping (NASA GOES-East, new every 10 minutes, about 30 minutes behind)</div></div><input type="checkbox" id="clouds-toggle"><span class="sw"></span></label>
+    <div class="sh-section">Imagery history here</div>
+    <div id="hist-list"></div>
+  </div>
+</div>
+
+<script src="vendor/maplibre-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
