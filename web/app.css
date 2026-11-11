@@ -816,3 +816,13 @@ body.is-3d .cloud-time { transform: translateY(-62px); }
 
 /* spray / cargo drones: bigger map icon (they are 2.5-3.5 m across) */
 .m-drone.ag { width: 92px; height: 92px; }
+
+/* field test: "where are you?" box (live test bridge only) */
+#brand { cursor: pointer; }
+.me-box { position: absolute; z-index: 30; top: calc(var(--safe-top) + 66px); left: 12px; right: 12px; max-width: 420px; padding: 12px; border-radius: 18px; }
+.me-t { font-weight: 750; margin: 0 2px 8px; }
+.me-box input { width: 100%; box-sizing: border-box; height: 42px; padding: 0 12px; border-radius: 12px; font: inherit; color: var(--text);
+  background: rgba(255, 255, 255, .08); border: 1px solid var(--line2); outline: none; user-select: text; -webkit-user-select: text; }
+.me-row { display: flex; gap: 8px; margin-top: 8px; }
+.me-row .btn { height: 38px; font-size: 13px; }
+.me-msg { font-size: 12px; color: var(--muted); margin: 8px 2px 0; }

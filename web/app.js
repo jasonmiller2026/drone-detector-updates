@@ -2229,6 +2229,10 @@
     if (d.freq) bits.push(`<b>${(d.freq / 1000).toFixed(3)}</b> GHz`);
     if (d.mac) bits.push(`<b>MAC</b> <span class="mono">${esc(d.mac)}</span>`);
     if (d.altGeo != null) bits.push(`<b>GPS alt</b> ${ft(d.altGeo)} ft`);
+    if (d.src) for (const [k, v] of Object.entries(d.src)) {
+      const nm = (S.st.detectors || []).find(x => x.id === k);
+      bits.push(`<b>${esc(nm ? nm.name : { board: 'Receiver', rider: 'RIDER' }[k] || k)}</b> ${v.rssi != null ? Math.round(v.rssi) + ' dBm, ' : ''}${ago(S.t - v.last)}, ${v.n} msgs`);
+    }
     setF(inner, 'meta', bits.join(' · '));
   }
 
@@ -2298,12 +2302,25 @@
     const st = S.rp && S.liveSt ? S.liveSt : S.st, u = st.usb || {};
     const nLive = st.drones.filter(isLive).length, nAc = S.settings.aircraft ? (st.aircraft || []).filter(a => !a.ground).length : 0;
     let cls, txt;
-    if (st.demo) { cls = 'demo'; txt = ''; }   // the DEMO chip already says it
+    if (st.detectors) {   // live test bridge: one entry per detector
+      const quiet = x => x.state !== 'connected' || st.t - (x.lastLine || 0) > 15;
+      cls = st.detectors.every(quiet) ? 'warn' : 'ok';
+      txt = st.detectors.map(x => `${x.name} ${x.state !== 'connected' ? 'unplugged' : quiet(x) ? 'quiet' : 'live'}${x.perMin ? ' · ' + x.perMin + ' msg/min' : ''}`).join(' · ');
+    } else if (st.demo) { cls = 'demo'; txt = ''; }   // the DEMO chip already says it
     else if (u.state === 'connected') { if (st.t - (u.lastLine || 0) < 6) { cls = 'ok'; txt = 'Receiver live'; } else { cls = 'warn'; txt = 'Receiver quiet · tap RSET'; } }
     else if (u.state === 'no-permission') { cls = 'warn'; txt = 'Allow USB access'; }
     else if (u.state === 'error') { cls = 'bad'; txt = 'Receiver error'; }
     else if (u.state === 'starting') { cls = ''; txt = 'Starting…'; }
     else { cls = 'bad'; txt = 'Plug in the receiver'; }
+    const rd = !st.detectors && st.rider && st.rider.state !== 'off' ? st.rider : null;   // Dronetag RIDER over Bluetooth
+    if (rd) {
+      const rOk = rd.state === 'connected';
+      const rTxt = rOk ? (st.t - (rd.lastData || 0) < 15 ? 'RIDER live' : 'RIDER connected') :
+        ({ connecting: 'Connecting to RIDER…', searching: 'Looking for RIDER…', 'no-permission': 'RIDER: allow Nearby devices',
+           'bluetooth-off': 'RIDER: turn on Bluetooth', 'no-bluetooth': 'No Bluetooth' }[rd.state] || 'RIDER ' + rd.state);
+      if (!st.demo && (u.state === 'no-device' || !u.state)) { txt = rTxt; cls = rOk ? 'ok' : 'warn'; }
+      else txt = txt ? txt + ' · ' + rTxt : rTxt;
+    }
     txt += (txt ? ' · ' : '') + (nLive === 1 ? '1 drone' : nLive + ' drones');
     if (nAc) txt += ' · ' + nAc + (nAc === 1 ? ' plane' : ' planes');
     $('#st-dot').className = 'dot ' + cls;
@@ -2325,6 +2342,7 @@
   const modal = $('#settings');
   $('#btn-settings').addEventListener('click', () => { syncSettings(); modal.classList.remove('hidden'); haptic(); });
   modal.addEventListener('click', e => { if (e.target === modal || e.target.closest('[data-close]')) modal.classList.add('hidden'); });
+  if (!A) $('#set-rider')?.classList.add('hidden');   // the RIDER needs the phone app's Bluetooth
   function syncSettings() {
     for (const cb of modal.querySelectorAll('[data-set]')) cb.checked = !!S.settings[cb.dataset.set];
     try { if (A && A.updateStatus) renderUpdate(JSON.parse(A.updateStatus())); } catch (e) { }
@@ -2795,6 +2813,48 @@
     if (navigator.geolocation) navigator.geolocation.watchPosition(
       p => { gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading, age: 0 }; },
       () => { }, { enableHighAccuracy: true, maximumAge: 5000 });
+    // ?live=board | rider | all: real detectors on the Mac's USB through tools/live_bridge.py, one detector's view each
+    // (Jason 2026-11-11: "two different displays of the app, one for the drone tag rider and one for the drone detector")
+    const LIVE = new URLSearchParams(location.search).get('live');
+    if (LIVE != null) {
+      const nm = { board: 'Our detector', rider: 'Dronetag RIDER' }[LIVE] || 'Both detectors';
+      document.querySelector('.brand-name').textContent = nm; document.title = nm;
+      // "you are here" for field tests (Jason: "I need to be able to put an address in or coordinates in to show where I am
+      // located"): tap the header, type an address or "lat, lon", or take the pilot spot the controller broadcasts
+      const box = document.createElement('div');
+      box.className = 'me-box glass liquid hidden';
+      box.innerHTML = '<div class="me-t">Where are you?</div><input id="me-q" placeholder="Address, or lat, lon" autocomplete="off" spellcheck="false">' +
+        '<div class="me-row"><button class="btn primary" data-me="set">Set</button><button class="btn" data-me="pilot">Use takeoff spot</button>' +
+        '<button class="btn" data-me="close">Close</button></div><div class="me-msg">Applies to both displays.</div>';
+      document.body.appendChild(box);
+      document.querySelector('#brand').addEventListener('click', () => box.classList.toggle('hidden'));
+      box.addEventListener('click', async e => {
+        const b = e.target.closest('[data-me]'); if (!b) return;
+        const msg = box.querySelector('.me-msg');
+        if (b.dataset.me === 'close') { box.classList.add('hidden'); return; }
+        let qs;
+        if (b.dataset.me === 'pilot') qs = 'use=takeoff';
+        else {
+          const v = box.querySelector('#me-q').value.trim(); if (!v) return;
+          const m = v.match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+          qs = m ? `lat=${m[1]}&lon=${m[2]}` : 'q=' + encodeURIComponent(v);
+        }
+        msg.textContent = 'Setting…';
+        try {
+          const r = await (await fetch('/live/me?' + qs, { cache: 'no-store' })).json();
+          msg.textContent = r.ok ? 'Set. Both displays use it now.' : r.error;
+          if (r.ok) setTimeout(() => box.classList.add('hidden'), 1500);
+        } catch (x) { msg.textContent = 'Could not reach the detector bridge.'; }
+      });
+      setInterval(async () => {
+        try {
+          const st = await (await fetch('/live/state.json' + (LIVE ? '?src=' + encodeURIComponent(LIVE) : ''), { cache: 'no-store' })).json();
+          if (gps && !(st.me && st.me.manual)) st.me = gps;   // a spot typed in wins over the browser's guess
+          st.settings = Object.assign({}, S.settings, { demo: false });
+          RID.onState(st);
+        } catch (e) { }
+      }, 1000);
+    } else
     fetch('../demo.jsonl', { cache: 'no-cache' }).then(r => r.text()).then(txt => {
       const rows = txt.trim().split('\n').map(l => JSON.parse(l));
       const drones = new Map(), me0 = { lat: 40.4362, lon: -81.1251, acc: 6, heading: 25, age: 0 };   // a road in the demo area (the web page's stand-in for you)
