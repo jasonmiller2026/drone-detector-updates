@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raw Detector Data</title>
+<style>
+  :root { --bg: #0b0f14; --panel: #141a21; --text: #e8edf3; --muted: #8b97a9; --line: rgba(255, 255, 255, .08); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 500 13px Inter, system-ui, sans-serif; }
+  main { display: flex; height: 100%; }
+  .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .col + .col { border-left: 8px solid #000; }
+  header { padding: 8px 12px; background: var(--panel); border-bottom: 2px solid #000; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+  header h2 { margin: 0; font-size: 14px; }
+  .col:first-child header { box-shadow: inset 0 -3px 0 #22d3ee; }
+  .col + .col header { box-shadow: inset 0 -3px 0 #f97316; }
+  header .st { color: var(--muted); font-size: 12px; }
+  header label { color: var(--muted); font-size: 12px; display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  .feed { flex: 1; overflow-y: auto; padding: 6px 8px 40px; font: 12px/1.45 ui-monospace, "Geist Mono", Menlo, monospace; }
+  .r { padding: 4px 6px; border-bottom: 1px solid var(--line); word-break: break-all; white-space: pre-wrap; }
+  .r .tm { color: var(--muted); margin-right: 6px; }
+  .r .k { display: inline-block; min-width: 64px; font-weight: 700; margin-right: 6px; }
+  .k.drone { color: #4ade80; } .k.heartbeat { color: #64748b; } .k.status { color: #94a3b8; } .k.log { color: #fbbf24; } .k.other, .k.text { color: #c084fc; }
+  .r.drone { background: rgba(74, 222, 128, .06); }
+  .dec { color: #a7f3d0; margin-top: 3px; }
+  .hint { color: var(--muted); padding: 10px; }
+</style></head>
+<body><main>
+  <div class="col" data-src="board"><header><h2>Our detector: raw lines</h2><span class="st"></span>
+    <label><input type="checkbox" data-hide="heartbeat"> hide heartbeats</label></header><div class="feed"><div class="hint">Waiting for data…</div></div></div>
+  <div class="col" data-src="rider"><header><h2>Dronetag RIDER: raw messages</h2><span class="st"></span>
+    <label><input type="checkbox" data-hide="status" checked> hide status</label><label><input type="checkbox" data-hide="log"> hide log lines</label></header>
+    <div class="feed"><div class="hint">Waiting for data…</div></div></div>
+</main>
+<script>
+// Raw view of everything the two detectors send (Jason 2026-11-11: "Can you show me all of the raw data that you're gathering
+// from these devices?"). Board: its JSON lines as sent. RIDER: each message in hex (after un-escaping), and for drone messages
+// the Remote ID fields decoded from the standard message pack inside.
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const tm = t => new Date(t * 1000).toLocaleTimeString('en-US', { hour12: false }) + '.' + String(Math.floor(t * 1000) % 1000).padStart(3, '0');
+for (const col of document.querySelectorAll('.col')) {
+  const src = col.dataset.src, feed = col.querySelector('.feed'), st = col.querySelector('.st');
+  let after = 0, first = true;
+  const hidden = () => [...col.querySelectorAll('[data-hide]')].filter(c => c.checked).map(c => c.dataset.hide);
+  const apply = () => { const h = hidden(); for (const r of feed.querySelectorAll('.r')) r.style.display = h.includes(r.dataset.kind) ? 'none' : ''; };
+  col.querySelectorAll('[data-hide]').forEach(c => c.addEventListener('change', apply));
+  async function poll() {
+    try {
+      const j = await (await fetch(`/live/raw?src=${src}&after=${after}`, { cache: 'no-store' })).json();
+      const d = j.det[src]; if (d) st.textContent = `${d.port} · ${d.state}`;
+      if (j.rows.length) {
+        if (first) { feed.innerHTML = ''; first = false; }
+        const atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60, h = hidden();
+        for (const r of j.rows) {
+          after = Math.max(after, r.seq);
+          const el = document.createElement('div');
+          el.className = 'r ' + r.kind; el.dataset.kind = r.kind;
+          if (h.includes(r.kind)) el.style.display = 'none';
+          el.innerHTML = `<span class="tm">${tm(r.t)}</span><span class="k ${r.kind}">${r.kind}</span>${esc(r.text)}` +
+            (r.decoded ? `<div class="dec">decoded: ${esc(JSON.stringify(r.decoded))}</div>` : '');
+          feed.appendChild(el);
+        }
+        while (feed.children.length > 600) feed.firstChild.remove();
+        if (atEnd) feed.scrollTop = feed.scrollHeight;
+      }
+    } catch (e) { st.textContent = 'bridge not reachable'; }
+    setTimeout(poll, 1000);
+  }
+  poll();
+}
+</script>
+</body></html>

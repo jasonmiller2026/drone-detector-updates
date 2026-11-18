@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detector Comparison</title>
+<style>
+  :root { --bg: #0b0f14; --panel: #141a21; --text: #e8edf3; --muted: #8b97a9; --line: rgba(255, 255, 255, .1); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 600 13px Inter, system-ui, sans-serif; }
+  main { display: flex; height: 100%; }
+  .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .col + .col { border-left: 8px solid #000; }   /* a solid black bar between the two phones (Jason: "it just looks like one big map") */
+  .col h2 { margin: 0; padding: 9px 12px; font-size: 14px; background: var(--panel); border-bottom: 2px solid #000; }
+  .col:first-child h2 { box-shadow: inset 0 -3px 0 #22d3ee; }
+  .col + .col h2 { box-shadow: inset 0 -3px 0 #f97316; }
+  .col h2 span { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  iframe { flex: 1; width: 100%; border: 0; }
+</style></head>
+<body><main></main>
+<script>
+// Which detectors, side by side: compare.html?show=board,triple,rider (any of them, in that order), or the older
+// ?a=board&b=triple; default board vs rider. Ids are the live_bridge.py names.
+const q = new URLSearchParams(location.search);
+const T = { board: ['Single radio board', 'SP32-B'], triple: ['Three-radio board', '3 x ESP32-C5'], rider: ['Dronetag RIDER', 'over USB'] };
+const ids = q.get('show') ? q.get('show').split(',') : [q.get('a') || 'board', q.get('b') || 'rider'];
+const COLORS = ['#22d3ee', '#f97316', '#a3e635', '#e879f9'];
+const main = document.querySelector('main');
+ids.forEach((id, i) => {
+  const [name, sub] = T[id] || [id, ''];
+  const col = document.createElement('div'); col.className = 'col';
+  col.innerHTML = '<h2>' + name + (sub ? '<span>' + sub + '</span>' : '') + '</h2><iframe></iframe>';
+  col.querySelector('h2').style.boxShadow = 'inset 0 -3px 0 ' + COLORS[i % COLORS.length];
+  const f = col.querySelector('iframe'); f.title = name; f.src = 'index.html?live=' + encodeURIComponent(id);
+  main.appendChild(col);
+});
+</script>
+</body></html>
