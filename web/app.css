@@ -663,10 +663,8 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 [data-theme="light"] .wc-bar i { background: linear-gradient(180deg, #94a3b8, #475569); }
 [data-theme="light"] .wc .wc-rain { color: #0369a1; }
 
-/* v0.2.6: moving clouds layer */
+/* v0.2.6: switches in the layers sheet */
 .img-toggle { padding: 12px 4px; }
-.cloud-time { position: absolute; z-index: 8; left: 14px; padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-variant-numeric: tabular-nums; pointer-events: none; }
-.cloud-time b { font-weight: 700; margin-right: 4px; }
 
 .cloud-pop .maplibregl-popup-content { background: rgba(var(--gt), .88); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); color: var(--text);
   border-radius: 16px; padding: 10px 13px; box-shadow: 0 8px 24px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.12); font: inherit; }
@@ -752,9 +750,6 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
    come directly out of the back of the drone") */
 .maplibregl-marker.m-drone, .maplibregl-marker.m-pilot, .maplibregl-marker.m-me, .maplibregl-marker.m-ac { position: absolute; top: 0; left: 0; }
 
-/* clouds on/off (2026-11-11): the time chip is tappable, its ✕ turns the clouds off */
-.cloud-time { pointer-events: auto; cursor: pointer; display: flex; align-items: center; }
-.cloud-time .ct-x { margin-left: 8px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, .25); font-size: 11px; opacity: .85; }
 
 /* ---------- flight replay (2026-11-11) */
 .sh-hist { align-self: center; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; margin: 0 8px 0 auto;
@@ -815,7 +810,6 @@ body.is-3d #controls .c3d { display: grid; }
 .cam-chips button[disabled] { opacity: .38; }
 .cam-hint { font-size: 12px; color: var(--muted); padding: 5px 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 15px; }
 .cam-hint b { color: var(--text); font-weight: 700; }
-body.is-3d .cloud-time { transform: translateY(-62px); }
 
 /* spray / cargo drones: bigger map icon (they are 2.5-3.5 m across) */
 .m-drone.ag { width: 92px; height: 92px; }

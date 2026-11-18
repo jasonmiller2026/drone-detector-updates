@@ -334,7 +334,6 @@
     try { map.addLayer(PATH3D); } catch (e) { log('JS', 'path3d layer: ' + e); }
     try { map.addLayer(DRONES3D); } catch (e) { log('JS', 'drones3d layer: ' + e); }
     S.mapReady = true;
-    setTimeout(() => { if (CLOUDS.on) loadClouds(); }, 500);
     const attr = document.querySelector('.maplibregl-ctrl-attrib');
     if (attr) attr.classList.remove('maplibregl-compact-show');
     applyLabels();
@@ -347,7 +346,7 @@
     const ap = map.queryRenderedFeatures(e.point, { layers: lay(['ap-dot', 'hp-dot']) });
     if (ap.length) { S.apt = ap[0].properties; S.aptLL = ap[0].geometry.coordinates; select('apt', S.apt.code || S.apt.IDENT, false); return; }
     const lines = S.settings.airspace !== false ? avLines(e.point) : [];
-    if (lines.length || CLOUDS.on) cloudAt(e.lngLat, lines.slice(0, 5)); else if (cloudPop) { cloudPop.remove(); cloudPop = null; }
+    if (lines.length) spotCard(e.lngLat, lines.slice(0, 5)); else if (spotPop) { spotPop.remove(); spotPop = null; }
     if (S.sel && !S.rp && !camLocked()) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
   });
   // a one-finger drag takes over from Follow; two fingers (turn, tilt, pinch) keep following
@@ -1527,135 +1526,31 @@
   setInterval(loadWind, 10 * 60 * 1000);
 
 
-  // ------------------------------------------------------------------ moving clouds: NASA GIBS, GOES-East GeoColor (true colour by day,
-  // infrared clouds at night), a frame every 10 minutes, about 30 minutes behind real time. White/grey = cloud; coloured or dark ground is
-  // made see-through. (Plain infrared was tried first: cold ground and low cloud are the same grey, so it could not be separated.)
-  const CLOUDS = { on: !!store.get('clouds'), frames: [], i: 0, timer: 0, busy: false, at: 0 };
-  const GIBS_LAYER = 'GOES-East_ABI_GeoColor', GIBS_MATRIX = 'GoogleMapsCompatible_Level7', GIBS_Z = 7;
-  const GIBS = `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${GIBS_LAYER}/default/`;
-  maplibregl.addProtocol('cloudir', async (params, ac) => {
-    const r = await fetch(params.url.replace('cloudir://', 'https://'), { signal: ac.signal });
-    if (!r.ok) return { data: await blankTile() };   // a square not published yet for that time: leave it clear
-    const bmp = await createImageBitmap(await r.blob());
-    const cv = new OffscreenCanvas(bmp.width, bmp.height), g = cv.getContext('2d');
-    g.drawImage(bmp, 0, 0);
-    const im = g.getImageData(0, 0, bmp.width, bmp.height), px = im.data;
-    for (let k = 0; k < px.length; k += 4) {
-      const r = px[k], gg = px[k + 1], b = px[k + 2], mn = Math.min(r, gg, b), mx = Math.max(r, gg, b), sat = mx ? (mx - mn) / mx : 0;
-      const a = Math.max(0, Math.min(1, (mn - 80) / 110)) * Math.max(0, Math.min(1, 1.25 - sat * 2.2));   // bright and colourless -> cloud
-      const v = 255 - Math.round((1 - a) * 35);                      // white, a touch grey at thin edges
-      px[k] = v; px[k + 1] = v; px[k + 2] = v; px[k + 3] = Math.round(a * 230 * px[k + 3] / 255);
-    }
-    g.putImageData(im, 0, 0);
-    return { data: await (await cv.convertToBlob({ type: 'image/png' })).arrayBuffer() };
-  });
-  const tenMin = d => d.toISOString().slice(0, 15) + '0:00Z';
-  let blankBuf = null;
-  async function blankTile() {
-    if (!blankBuf) { const c = new OffscreenCanvas(1, 1); c.getContext('2d'); blankBuf = await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer(); }   // needs a context before it can save
-    return blankBuf.slice(0);
-  }
-  async function newestCloudTime() {
-    const c = map.getCenter(), n = 64, lr = c.lat * Math.PI / 180;
-    const x = Math.floor((c.lng + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(lr) + 1 / Math.cos(lr)) / Math.PI) / 2 * n);
-    for (let back = 10; back <= 150; back += 10) {
-      const t = tenMin(new Date(Date.now() - back * 60000));
-      try { const r = await fetch(`${GIBS}${t}/${GIBS_MATRIX}/6/${y}/${x}.png`); if (r.ok) return new Date(t); } catch (e) { return null; }
-    }
-    return null;
-  }
-  function clearClouds() {
-    clearInterval(CLOUDS.timer); CLOUDS.timer = 0;
-    for (const f of CLOUDS.frames) { if (map.getLayer(f.id)) map.removeLayer(f.id); if (map.getSource(f.id)) map.removeSource(f.id); }
-    CLOUDS.frames = [];
-    $('#cloud-time').classList.add('hidden');
-  }
-  function placeCloudTime() {
-    const el = $('#cloud-time'); el.style.bottom = Math.round(window.innerHeight - sheetTop() + 10) + 'px';
-  }
-  async function loadClouds() {
-    if (!S.mapReady || CLOUDS.busy) return;
-    if (!CLOUDS.on) { clearClouds(); return; }
-    CLOUDS.busy = true;
-    try {
-      const found = await newestCloudTime(), newest = found && new Date(found.getTime() - 600000);
-      if (!newest) { toast('Could not reach the cloud pictures (no internet?)', 3000); return; }
-      clearClouds();
-      const before = map.getLayer('meacc') ? 'meacc' : undefined;
-      for (let k = 11; k >= 0; k--) {                                  // 12 frames = the last 2 hours
-        const t = new Date(newest.getTime() - k * 600000), id = 'cloud-' + k;
-        map.addSource(id, { type: 'raster', tileSize: 256, maxzoom: GIBS_Z, attribution: 'Clouds: NASA GIBS / NOAA GOES-East',
-          tiles: [`cloudir://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${GIBS_LAYER}/default/${tenMin(t)}/${GIBS_MATRIX}/{z}/{y}/{x}.png`] });
-        map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': 0, 'raster-opacity-transition': { duration: 350 }, 'raster-fade-duration': 0, 'raster-resampling': 'linear' } }, before);
-        CLOUDS.frames.push({ id, t });
-      }
-      CLOUDS.i = CLOUDS.frames.length - 1; CLOUDS.at = Date.now();
-      let hold = 0;
-      const show = () => {
-        const f = CLOUDS.frames; if (!f.length) return;
-        if (CLOUDS.i === f.length - 1 && hold++ < 3) return;             // linger on the newest picture
-        hold = 0;
-        const prev = CLOUDS.i; CLOUDS.i = (CLOUDS.i + 1) % f.length;
-        if (map.getLayer(f[prev].id)) map.setPaintProperty(f[prev].id, 'raster-opacity', 0);
-        if (map.getLayer(f[CLOUDS.i].id)) map.setPaintProperty(f[CLOUDS.i].id, 'raster-opacity', 0.9);
-        const el = $('#cloud-time'), newestNow = CLOUDS.i === f.length - 1;
-        el.innerHTML = `<b>Clouds</b> ${clock(f[CLOUDS.i].t.getTime() / 1000)}${newestNow ? ' · newest' : ''}<span class="ct-x" aria-label="Turn clouds off">✕</span>`;
-        el.classList.remove('hidden'); placeCloudTime();
-      };
-      map.setPaintProperty(CLOUDS.frames[CLOUDS.i].id, 'raster-opacity', 0.9);
-      CLOUDS.timer = setInterval(show, 450);
-    } finally { CLOUDS.busy = false; }
-  }
-  // tap the map with clouds on: cloud cover at that spot now and the next 3 hours (Open-Meteo, spot rounded to ~1 km)
-  let cloudPop = null;
-  async function cloudAt(ll, lines) {
-    if (cloudPop) cloudPop.remove();
+  // tap the map: the airspace at that spot, on a card with an X to close it
+  // (the moving-clouds layer and its cloud-cover card were removed 2026-11-18, Jason: "the cloud feature ... is actually
+  // kind of useless on this app, and it's taking up room")
+  let spotPop = null;
+  function spotCard(ll, lines) {
+    if (spotPop) spotPop.remove();
     // the X in the top-right corner closes the card (Jason: "just have an X at the top right hand corner")
-    const head = '<button class="cp-x" aria-label="Close">✕</button>' +
-      (lines && lines.length ? `<div class="ip">${lines.map(l => `<div class="ip-row">${l}</div>`).join('')}</div>` : '');
+    const html = '<button class="cp-x" aria-label="Close">✕</button>' +
+      `<div class="ip">${lines.map(l => `<div class="ip-row">${l}</div>`).join('')}</div>`;
     // card sits on a stem above the spot (below it near the top of the screen), leaning away from the screen edges
     const pt = map.project(ll), W = window.innerWidth, up = pt.y > S.safeTop + 330;
     const side = pt.x < W * 0.34 ? '-left' : pt.x > W * 0.66 ? '-right' : '', anchor = (up ? 'bottom' : 'top') + side;
     const offset = { [anchor]: [side === '-left' ? -24 : side === '-right' ? 24 : 0, up ? -52 : 52] };
-    const pop = cloudPop = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'cloud-pop', anchor, offset, maxWidth: '280px' })
-      .setLngLat(ll).setHTML(head + (CLOUDS.on ? '<div class="cp-sub">Checking the clouds here…</div>' : '')).addTo(map);
+    const pop = spotPop = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'cloud-pop', anchor, offset, maxWidth: '280px' })
+      .setLngLat(ll).setHTML(html).addTo(map);
     pop.getElement().addEventListener('click', ev => {
       if (!ev.target.closest('.cp-x')) return;
-      ev.stopPropagation(); haptic(); pop.remove(); if (cloudPop === pop) cloudPop = null;
+      ev.stopPropagation(); haptic(); pop.remove(); if (spotPop === pop) spotPop = null;
     });
-    if (!CLOUDS.on) return;
-    try {
-      const u = `https://api.open-meteo.com/v1/forecast?latitude=${ll.lat.toFixed(2)}&longitude=${ll.lng.toFixed(2)}` +
-        '&current=cloud_cover&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_hours=4&timezone=auto';
-      const d = await (await fetch(u)).json(), c = d.current, h = d.hourly || {};
-      if (!c || c.cloud_cover == null) throw new Error('no cloud data');
-      const r0 = a => a && a[0] != null ? Math.round(a[0]) : '—';
-      const next = (h.cloud_cover || []).slice(1, 4).map(v => Math.round(v) + '%').join(' → ');
-      if (pop !== cloudPop) return;
-      pop.setHTML(head + `<div class="cp-big">${skyOf(c.cloud_cover)}<b>${Math.round(c.cloud_cover)}%</b><span>cloud cover here</span></div>` +
-        `<div class="cp-sub">Low ${r0(h.cloud_cover_low)}% · mid ${r0(h.cloud_cover_mid)}% · high ${r0(h.cloud_cover_high)}%</div>` +
-        (next ? `<div class="cp-sub">Next 3 hours: ${next}</div>` : ''));
-    } catch (e) { if (pop === cloudPop) pop.setHTML(head + '<div class="cp-sub">Could not get the cloud cover here (no internet?)</div>'); }
   }
-  $('#clouds-toggle').checked = CLOUDS.on;
   // airspace extras in the layers sheet
   $('#laanc-toggle').checked = AVX.laanc; $('#stadium-toggle').checked = AVX.stadiums;
   $('#laanc-toggle').addEventListener('change', e => { AVX.laanc = e.target.checked; store.set('laanc', AVX.laanc); haptic(); loadAviation(true);
     if (AVX.laanc && map.getZoom() < 11) toast('Zoom in near an airport to see the LAANC ceiling squares', 3500); });
   $('#stadium-toggle').addEventListener('change', e => { AVX.stadiums = e.target.checked; store.set('stadiums', AVX.stadiums); haptic(); loadAviation(true); });
-  // one switch for the clouds, from the cloud button by the map, the layers sheet, or the ✕ on the clouds time chip
-  // (Jason 2026-11-11: "a toggle that we can turn on the cloud layer and turn it off ... so you can see the detail better")
-  function setClouds(on) {
-    CLOUDS.on = on; store.set('clouds', on); haptic(); loadClouds();
-    $('#clouds-toggle').checked = on; $('#btn-clouds').classList.toggle('on', on);
-    if (on) toast('Clouds on. Tap the map to see the cloud cover there', 3000);
-    else { toast('Clouds off', 1400); if (cloudPop) { cloudPop.remove(); cloudPop = null; } }
-  }
-  $('#btn-clouds').classList.toggle('on', CLOUDS.on);
-  $('#clouds-toggle').addEventListener('change', e => setClouds(e.target.checked));
-  $('#btn-clouds').addEventListener('click', () => setClouds(!CLOUDS.on));
-  $('#cloud-time').addEventListener('click', () => setClouds(false));
-  setInterval(() => { if (CLOUDS.on && Date.now() - CLOUDS.at > 10 * 60000) loadClouds(); }, 60000);   // pick up new pictures
 
   // ------------------------------------------------------------------ toast, problem log, report
   let toastTimer = 0;
@@ -2928,7 +2823,7 @@
     smoothCache.delete('rp-ghost');
     map.getSource('rpghost').setData(sp ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: sp.coords } } : EMPTY);
     S.kind = 'drone'; S.sel = S.rp.id; S.follow = false; S.view = '';
-    if (cloudPop) { cloudPop.remove(); cloudPop = null; }
+    if (spotPop) { spotPop.remove(); spotPop = null; }
     inner.scrollTop = 0;
     rpRender(true);
     setSheet('peek');

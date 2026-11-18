@@ -37,7 +37,6 @@
   <radialGradient id="g-green"><stop offset="0" stop-color="#4dff8f" stop-opacity=".95"/><stop offset="1" stop-color="#4dff8f" stop-opacity="0"/></radialGradient>
 </defs></svg>
 <div id="map"></div>
-<div id="cloud-time" class="cloud-time glass hidden"></div>
 <div id="cam3d" class="cam3d glass liquid hidden">
   <div class="cam-chips">
     <button data-cam="orbit">Orbit</button><button data-cam="spin" class="hidden" aria-label="Turn slowly">⟳ Spin</button><button data-cam="follow">Follow</button>
@@ -82,9 +81,6 @@
 <div id="controls" class="glass liquid">
   <button class="ctl" id="btn-layers" aria-label="Map imagery">
     <svg viewBox="0 0 24 24"><path d="M12 3 2.5 8 12 13l9.5-5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m2.5 12 9.5 5 9.5-5M2.5 16l9.5 5 9.5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-  </button>
-  <button class="ctl" id="btn-clouds" aria-label="Clouds on or off">
-    <svg viewBox="0 0 24 24"><path d="M6.8 18.5h10.4a4 4 0 0 0 .5-7.97A5.6 5.6 0 0 0 7 9.4a4.6 4.6 0 0 0-.2 9.1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
   </button>
   <button class="ctl" id="btn-3d" aria-label="3D view"><span>3D</span></button>
   <button class="ctl c3d" id="btn-north" aria-label="Face north"><svg viewBox="0 0 24 24"><path d="M12 3.5 16.5 13h-9z" fill="#ef4444"/><path d="M12 20.5 7.5 13h9z" fill="currentColor" opacity=".55"/></svg></button>
@@ -177,8 +173,6 @@
     <label class="set img-toggle"><div><div class="set-name">LAANC ceilings</div><div class="set-sub">FAA grid near airports: the highest you can get approved in each square (zoom in to see)</div></div><input type="checkbox" id="laanc-toggle"><span class="sw"></span></label>
     <label class="set img-toggle"><div><div class="set-name">Stadium rings</div><div class="set-sub">3 NM no-drone rings that apply during games and events</div></div><input type="checkbox" id="stadium-toggle"><span class="sw"></span></label>
     <div class="set-sub" style="padding:2px 4px 10px">Always shown with airspace on: Class B, C, D, E with altitude blocks, restricted, prohibited, warning, MOA and alert areas, national-security drone no-fly zones and standing defense TFRs. Live TFRs are not included yet: check the FAA's TFR list before flying.</div>
-    <div class="sh-section">Weather</div>
-    <label class="set img-toggle"><div><div class="set-name">Moving clouds</div><div class="set-sub" id="cap-clouds">Real weather-satellite clouds from the last 2 hours, looping (NASA GOES-East, new every 10 minutes, about 30 minutes behind)</div></div><input type="checkbox" id="clouds-toggle"><span class="sw"></span></label>
     <div class="sh-section">Imagery history here</div>
     <div id="hist-list"></div>
   </div>
