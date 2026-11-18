@@ -2542,7 +2542,7 @@
     const ph = !st.detectors && st.phone && st.phone.state !== 'off' ? st.phone : null;   // the phone's own Bluetooth + Wi-Fi
     if (ph) {
       const pOk = ph.state === 'listening';
-      extra.push(pOk ? (st.t - (ph.lastData || 0) < 15 ? 'Phone live' : 'Phone listening') :
+      extra.push(pOk ? (st.t - (ph.lastData || 0) < 15 ? 'Phone live' : 'Phone scanning') :   // "scanning", not "listening" (Jason 2026-11-18)
         ({ 'no-nearby': 'Phone: allow Nearby devices', 'no-permission': 'Phone: allow Location', 'location-off': 'Phone: turn on Location',
            'radios-off': 'Phone: turn on Bluetooth or Wi-Fi' }[ph.state] || 'Phone ' + ph.state));
       if (pOk) extraOk = true;
