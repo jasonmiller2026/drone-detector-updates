@@ -645,22 +645,16 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 [data-theme="light"] .hc-stats { background: rgba(15,23,42,.05); box-shadow: inset 0 0 0 1px rgba(15,23,42,.06); }
 [data-theme="light"] .hc-stats > div + div { box-shadow: inset 1px 0 0 rgba(15,23,42,.08); }
 
-/* v0.2.6: cloud cover beside the wind, and a 12-hour cloud strip when the wind widget is opened (Open-Meteo) */
+/* v0.2.6: a 12-hour strip when the wind widget is opened (Open-Meteo); its cloud cover was removed 2026-11-18 */
 .wind { max-width: 280px; }
 .wind.open { max-width: 330px; }
-.wind-cloud { display: flex; flex-direction: column; align-items: center; gap: 1px; padding-left: 10px; margin-left: 2px; border-left: 1px solid var(--line); font-size: 12px; font-weight: 650; }
-.wind-cloud svg { width: 24px; height: 24px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
 .wc-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 8px 0 6px; }
 .wc { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; line-height: 1.15; min-width: 0; }
 .wc em { font-style: normal; font-weight: 600; color: var(--muted); }
-.wc-bar { width: 12px; height: 36px; border-radius: 6px; background: rgba(255,255,255,.10); display: flex; align-items: flex-end; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,.3); }
-.wc-bar i { display: block; width: 100%; border-radius: 6px; background: linear-gradient(180deg, #f8fafc, #9aa6b6); }
 .wc b { font-size: 11.5px; font-weight: 700; color: var(--text); }
 .wc span { color: var(--muted); white-space: nowrap; }
 .wc .wc-rain { color: #7dd3fc; font-weight: 650; }
 .wind-upd { font-size: 11px; color: var(--muted); }
-[data-theme="light"] .wc-bar { background: rgba(15,23,42,.08); box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
-[data-theme="light"] .wc-bar i { background: linear-gradient(180deg, #94a3b8, #475569); }
 [data-theme="light"] .wc .wc-rain { color: #0369a1; }
 
 /* v0.2.6: switches in the layers sheet */
@@ -682,7 +676,7 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 .ip-row b { font-weight: 700; }
 .ip + .cp-big, .ip + .cp-sub { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
 
-/* v0.2.7 compact wind: arrow, speed, direction and a small sky icon; gusts and cloud % open on tap */
+/* v0.2.7 compact wind: arrow, speed and direction; gusts and the next 12 hours open on tap */
 .wind { padding: 4px 12px 4px 4px; gap: 0; max-width: 200px; }
 .wind.open { max-width: 330px; }
 .wind-row { gap: 8px; }
@@ -693,8 +687,6 @@ html, body { font-family: Inter, system-ui, -apple-system, Roboto, sans-serif; f
 .wind-big { font-size: 20px; display: flex; align-items: baseline; }
 .wind-big small { font-size: 10.5px; }
 .wind-sub { font-size: 11px; margin-top: 2px; }
-.wind-sky { display: inline-flex; margin-left: 6px; align-self: center; }
-.wind-sky svg { width: 18px; height: 18px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
 
 /* v0.2.7 scrolling panels (Settings, map layers, report): the glass rim and sheen are drawn on the panel itself, so they stay put
    instead of sliding with the rows (Jason: "a small line right below road and place names ... scrolls up and down with that screen") */

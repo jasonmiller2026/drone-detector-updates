@@ -347,7 +347,7 @@
     if (ap.length) { S.apt = ap[0].properties; S.aptLL = ap[0].geometry.coordinates; select('apt', S.apt.code || S.apt.IDENT, false); return; }
     const lines = S.settings.airspace !== false ? avLines(e.point) : [];
     if (lines.length) spotCard(e.lngLat, lines.slice(0, 5)); else if (spotPop) { spotPop.remove(); spotPop = null; }
-    if (S.sel && !S.rp && !camLocked()) deselect(); else if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
+    if (S.sel && !S.rp && !camLocked()) deselect(); else if (sheetOpen()) setSheet('peek');
   });
   // a one-finger drag takes over from Follow; two fingers (turn, tilt, pinch) keep following
   map.on('dragstart', e => {
@@ -1417,7 +1417,7 @@
     LA.busy = false;
     if (LA.again) { LA.again = false; setTimeout(() => loadLaanc(false), 50); }
   }
-  // tap the map: what airspace is here (and the clouds, when that layer is on)
+  // tap the map: what airspace is here
   function avLines(pt) {
     const lay = ids => ids.filter(id => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none');
     const hits = map.queryRenderedFeatures(pt, { layers: lay(['nofly-fill', 'sua-hatch', 'stad-fill', 'as-fill', 'laanc-fill']) });
@@ -1467,21 +1467,14 @@
 
   // ------------------------------------------------------------------ wind (Open-Meteo, location rounded to ~1 km)
   const WIND = { data: null, at: 0, open: false };
-  // sky icon for a cloud-cover percentage: sun, sun behind a cloud, or cloud
-  const SKY = {
-    sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.6" fill="#fcd34d"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" stroke="#fcd34d" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    part: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="4" fill="#fcd34d"/><path d="M9 1.8v1.6M2.3 8.5h1.6M4.3 3.8l1.1 1.1M13.7 3.8l-1.1 1.1" stroke="#fcd34d" stroke-width="1.6" stroke-linecap="round"/><path d="M8 20h9.5a3.8 3.8 0 0 0 .5-7.56A5.2 5.2 0 0 0 8.2 11.4 4.3 4.3 0 0 0 8 20z" fill="#e5e9ef"/></svg>',
-    cloud: '<svg viewBox="0 0 24 24"><path d="M6.6 19.5h10.6a4.3 4.3 0 0 0 .6-8.55A5.9 5.9 0 0 0 6.8 9.9a4.8 4.8 0 0 0-.2 9.6z" fill="#e5e9ef"/></svg>',
-  };
-  const skyOf = cc => cc < 20 ? SKY.sun : cc < 65 ? SKY.part : SKY.cloud;
   async function loadWind() {
     if (S.settings.wind === false) { $('#wind').classList.add('hidden'); return; }
     const p = me(), c = p ? [p.lat, p.lon] : S.mapReady ? [map.getCenter().lat, map.getCenter().lng] : null;
     if (!c) return;
     try {
       const u = `https://api.open-meteo.com/v1/forecast?latitude=${c[0].toFixed(2)}&longitude=${c[1].toFixed(2)}` +
-        '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,cloud_cover' +
-        '&hourly=wind_speed_120m,wind_direction_120m,wind_speed_10m,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability' +
+        '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m' +
+        '&hourly=wind_speed_120m,wind_direction_120m,wind_speed_10m,precipitation_probability' +
         '&forecast_hours=13&wind_speed_unit=mph&temperature_unit=fahrenheit&timezone=auto';
       const d = await (await fetch(u)).json();
       if (!d.current) throw new Error('no current weather');
@@ -1498,24 +1491,19 @@
     $('#wind-rose').style.transform = `rotate(${-b}deg)`;
     $('#wind-arrow').style.transform = `rotate(${(from + 180) % 360}deg)`;   // arrow points the way the wind is blowing
     $('#wind-spd').textContent = spd;
-    $('#wind-sub').textContent = spd < 1 ? 'Calm' : `from ${compass(from)} ${Math.round(from)}°`;   // gusts + cloud % live in the opened view
+    $('#wind-sub').textContent = spd < 1 ? 'Calm' : `from ${compass(from)} ${Math.round(from)}°`;   // gusts and the next 12 hours live in the opened view
     const h = d.hourly || {}, s120 = h.wind_speed_120m && h.wind_speed_120m[0], d120 = h.wind_direction_120m && h.wind_direction_120m[0];
     const mins = Math.round((Date.now() - WIND.at) / 60000);
-    // clouds now (chip beside the wind) and the next 12 hours (strip when the widget is opened)
-    const cc = c.cloud_cover;
-    $('#wind-sky').classList.toggle('hidden', cc == null);
-    if (cc != null) $('#wind-sky').innerHTML = skyOf(cc);
-    const n = (h.cloud_cover || []).length, pct = (a, i) => a && a[i] != null ? Math.round(a[i]) : null;
+    // the next 12 hours, every 2 hours: wind, and the rain chance when it is 30% or more (cloud cover removed 2026-11-18,
+    // Jason: "I want the whole cloud cover option gone")
+    const n = (h.wind_speed_10m || []).length, pct = (a, i) => a && a[i] != null ? Math.round(a[i]) : null;
     let strip = '';
     for (let i = 0; i < Math.min(n, 13); i += 2) {
       const t = new Date(h.time[i]), lbl = i === 0 ? 'Now' : t.toLocaleTimeString('en-US', { hour: 'numeric' }).replace(':00', '').replace(' AM', 'a').replace(' PM', 'p');
-      const v = pct(h.cloud_cover, i), rain = pct(h.precipitation_probability, i), w = pct(h.wind_speed_10m, i);
-      strip += `<div class="wc"><em>${lbl}</em><div class="wc-bar"><i style="height:${Math.max(6, v || 0)}%"></i></div><b>${v == null ? '—' : v + '%'}</b>` +
-        `<span>${w == null ? '' : w + ' mph'}</span>${rain >= 30 ? `<span class="wc-rain">${rain}% rain</span>` : ''}</div>`;
+      const rain = pct(h.precipitation_probability, i), w = pct(h.wind_speed_10m, i);
+      strip += `<div class="wc"><em>${lbl}</em><b>${w == null ? '—' : w}</b><span>mph</span>${rain >= 30 ? `<span class="wc-rain">${rain}% rain</span>` : ''}</div>`;
     }
-    const lo = pct(h.cloud_cover_low, 0), mid = pct(h.cloud_cover_mid, 0), hi = pct(h.cloud_cover_high, 0);
     $('#wind-more').innerHTML = (gust > spd ? `Gusts <b>${gust} mph</b><br>` : '') + (s120 != null ? `At 400 ft: <b>${Math.round(s120)} mph</b> from ${compass(d120)} ${Math.round(d120)}°<br>` : '') +
-      (cc != null ? `Clouds <b>${Math.round(cc)}%</b>${lo != null ? ` · low ${lo}% · mid ${mid}% · high ${hi}%` : ''}<br>` : '') +
       (strip ? `<div class="wc-strip">${strip}</div>` : '') +
       `<div class="wind-upd">${Math.round(c.temperature_2m)}°F · Open-Meteo · updated ${mins < 1 ? 'just now' : mins + ' min ago'}</div>`;
     $('#wind-more').classList.toggle('hidden', !WIND.open);
@@ -1988,8 +1976,12 @@
   function sheetTop() { return sheet.getBoundingClientRect().top; }
   function stops() {
     const H = sheet.offsetHeight, vh = window.innerHeight;
-    return { mini: Math.max(0, H - miniH()), peek: Math.max(0, H - (S.rp ? rpPeekH() : S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
+    const s = { mini: Math.max(0, H - miniH()), peek: Math.max(0, H - (S.rp ? rpPeekH() : S.view === 'list' && S.peekH ? S.peekH : 150)), half: Math.max(0, H - vh * 0.52), full: 0 };   // the sheet sits above Android's nav buttons
+    s.free = Math.min(s.mini, Math.max(0, S.freeY || 0));   // wherever the finger let go of it
+    return s;
   }
+  const curY = () => stops()[S.sheet];
+  const sheetOpen = () => curY() < stops().peek - 1;   // pulled up past the top card: the list shows and scrolls
   // mini = just the handle and the header line ("Drones · 23.0 mi SE to pilot · 1 live")
   function miniH() {
     const h = inner.querySelector(S.rp ? '.rp-bar' : S.sel ? '.det-head' : '.sh-head');
@@ -2000,45 +1992,110 @@
   // Android's navigation buttons with rounded corners instead of showing through behind them.
   const placeSheet = y => { sheet.style.transform = `translateY(${y}px)`; sheet.style.clipPath = `inset(0 0 ${y}px 0 round 30px)`; placeCam(); };
   function setSheet(name) {
-    if (S.sheet !== name && drag === null) haptic();   // one light tick per snap
+    if (S.sheet !== name && name !== 'free' && !dragging()) haptic();   // one light tick per snap
     S.sheet = name;
-    const y = stops()[name]; S.sheetY = y;
+    const st = stops(), y = st[name]; S.sheetY = y;
     placeSheet(y);
     sheet.classList.toggle('is-mini', name === 'mini');
-    // half open: the lower part of the sheet is off screen, so let the list scroll that much further (the last buttons were cut off)
-    inner.style.paddingBottom = name === 'half' ? `${28 + Math.round(y)}px` : '';
-    inner.style.overflowY = name === 'peek' || name === 'mini' ? 'hidden' : 'auto';
-    if (name === 'peek' || name === 'mini') { inner.scrollTop = 0; store.set('sheetMini', name === 'mini'); }
+    const shut = y >= st.peek - 1;
+    // part open: the lower part of the sheet is off screen, so let the list scroll that much further (the last buttons were cut off)
+    inner.style.paddingBottom = !shut && y > 0 ? `${28 + Math.round(y)}px` : '';
+    inner.style.overflowY = shut ? 'hidden' : 'auto';
+    if (shut) { inner.scrollTop = 0; store.set('sheetMini', name === 'mini'); }
   }
-  let drag = null;
+  // ---------- dragging the sheet (v0.2.17, Jason 2026-11-18: "when I swipe it down, I want it to go all the way down when
+  // I pull it up, I want to pull all the way up or if I pull it up a quarter of the way, I just want to stop where my
+  // finger stops"). The sheet follows the finger from anywhere on it: the handle, the header, the drone cards. Over the
+  // list it moves until the sheet is all the way up; then the list scrolls, and pulling down with the list at its top
+  // moves the sheet again. Let go: a quick swipe goes all the way down (the slim bar) or all the way up; otherwise it
+  // stays where the finger stopped, lining up with a stop only within 24 px of one. The swipe speed is read over the last
+  // 100 ms only, so a drag that slows down and stops is never taken for a swipe (the old code averaged the whole drag,
+  // and a cancelled touch could read as a fast flick up: the sheet jumped a size the wrong way).
+  // Touch uses touch events (a touchmove can be cancelled, so the list doesn't scroll under the drag); a mouse uses pointer events.
+  let drag = null, noClickUntil = 0;
+  const FLICK = 0.5, SNAP = 24, SLOP = 6;   // px per ms, px, px
+  const dragging = () => !!(drag && drag.own);
+  function dragStart(x, y, target, id) {
+    drag = null;
+    if (target.closest('input, select, textarea')) return;   // the replay slider and switches keep their own drag
+    const m = new DOMMatrix(getComputedStyle(sheet).transform), base = m.m42;
+    drag = { x0: x, y0: y, base, y: base, id, own: false, done: false, moved: false, max: stops().mini,
+      handle: !!target.closest('.grab, .sh-head, .det-head, .rp-bar') || !sheetOpen(),
+      step: !!target.closest('.grab') || S.sheet === 'mini' && !target.closest('button, .row, a, [data-act]'),
+      pts: [[performance.now(), y]] };
+  }
+  // returns true while the sheet owns the gesture (the caller then cancels the browser's scroll)
+  function dragMove(x, y) {
+    const d = drag;
+    if (!d || d.done) return false;
+    const dy = y - d.y0, dx = x - d.x0;
+    if (!d.own) {
+      if (Math.abs(dy) < 2 && Math.abs(dx) < 2) return false;
+      d.done = Math.abs(dx) > Math.abs(dy) * 1.2;   // sideways: not ours
+      // over the list: the sheet moves up until it is all the way up, and down only while the list is at its top
+      if (!d.done) d.done = !(d.handle || (dy < 0 && d.base > 0.5) || (dy > 0 && inner.scrollTop <= 0));
+      if (d.done) return false;
+      d.own = true;
+    }
+    d.pts.push([performance.now(), y]);
+    if (d.pts.length > 12) d.pts.shift();
+    if (!d.moved && Math.abs(dy) > SLOP) { d.moved = true; sheet.classList.add('dragging'); }
+    if (d.moved) { d.y = Math.min(d.max, Math.max(0, d.base + dy)); placeSheet(d.y); }
+    return true;
+  }
+  function dragEnd(y, cancelled) {
+    const d = drag; drag = null;
+    if (!d) return;
+    sheet.classList.remove('dragging');
+    if (!d.moved) {
+      // a tap: the slim bar opens back up; the handle steps up a size (mini -> peek -> half -> full, full -> half)
+      if (!cancelled && !d.done && d.step) {
+        const st = stops(), up = SHEET_ORDER.find(k => st[k] < curY() - 1);
+        setSheet(up || 'half');
+      }
+      return;
+    }
+    noClickUntil = performance.now() + 400;   // a drag that started on a card or button doesn't also tap it
+    const now = performance.now(), last = d.pts[d.pts.length - 1];
+    let v = 0;
+    if (!cancelled && now - last[0] < 120) {
+      const ref = d.pts.find(p => last[0] - p[0] <= 100) || last;
+      if (last[0] - ref[0] > 15) v = (last[1] - ref[1]) / (last[0] - ref[0]);
+    }
+    if (v > FLICK) return setSheet('mini');    // quick swipe down: all the way down
+    if (v < -FLICK) return setSheet('full');   // quick swipe up: all the way up
+    const st = stops(), yy = Math.min(st.mini, Math.max(0, d.y));
+    const near = SHEET_ORDER.reduce((b, k) => Math.abs(st[k] - yy) < Math.abs(st[b] - yy) ? k : b, 'peek');
+    if (Math.abs(st[near] - yy) <= SNAP) return setSheet(near);
+    S.freeY = yy; setSheet('free');
+  }
+  sheet.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { if (drag && drag.own) dragEnd(0, true); drag = null; return; }
+    const t = e.touches[0]; dragStart(t.clientX, t.clientY, e.target, 'touch');
+  }, { passive: true });
+  sheet.addEventListener('touchmove', e => {
+    if (!drag || drag.id !== 'touch' || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (dragMove(t.clientX, t.clientY) && e.cancelable) e.preventDefault();
+  }, { passive: false });
+  sheet.addEventListener('touchend', e => {
+    if (!drag || drag.id !== 'touch' || e.touches.length) return;
+    const t = e.changedTouches[0]; if (t) dragMove(t.clientX, t.clientY);
+    dragEnd(t ? t.clientY : 0, false);
+  });
+  sheet.addEventListener('touchcancel', () => { if (drag && drag.id === 'touch') dragEnd(0, true); });
   sheet.addEventListener('pointerdown', e => {
-    if (e.target.closest('button, .row, input, label')) return;
-    const handle = e.target.closest('.grab, .sh-head, .det-head') || S.sheet === 'peek' || S.sheet === 'mini';
-    if (!handle) return;
-    const m = new DOMMatrix(getComputedStyle(sheet).transform);
-    drag = { y0: e.clientY, t0: performance.now(), base: m.m42, y: m.m42, moved: false, id: e.pointerId, grab: !!e.target.closest('.grab') };
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    dragStart(e.clientX, e.clientY, e.target, e.pointerId);
   });
   sheet.addEventListener('pointermove', e => {
-    if (!drag) return;
-    const dy = e.clientY - drag.y0;
-    if (!drag.moved && Math.abs(dy) > 6) { drag.moved = true; sheet.classList.add('dragging'); try { sheet.setPointerCapture(drag.id); } catch (x) { } }
-    if (drag.moved) { drag.y = Math.max(0, drag.base + dy); placeSheet(drag.y); }
+    if (!drag || drag.id !== e.pointerId) return;
+    const was = drag.own;
+    if (dragMove(e.clientX, e.clientY) && !was) { try { sheet.setPointerCapture(e.pointerId); } catch (x) { } }
   });
-  const endDrag = e => {
-    if (!drag) return;
-    const d = drag; drag = null;
-    sheet.classList.remove('dragging');
-    // a tap: the slim bar opens back up; the handle steps mini -> peek -> half -> full
-    if (!d.moved) { if (d.grab || S.sheet === 'mini') setSheet({ mini: 'peek', peek: 'half', half: 'full', full: 'half' }[S.sheet]); return; }
-    const v = (e.clientY - d.y0) / Math.max(1, performance.now() - d.t0), st = stops(), i = SHEET_ORDER.indexOf(S.sheet);
-    let target;
-    if (v > 0.55) target = SHEET_ORDER[Math.max(0, i - 1)];          // flick down: one size smaller
-    else if (v < -0.55) target = SHEET_ORDER[Math.min(3, i + 1)];    // flick up: one size bigger
-    else target = SHEET_ORDER.reduce((b, k) => Math.abs(st[k] - d.y) < Math.abs(st[b] - d.y) ? k : b, 'peek');
-    setSheet(target);
-  };
-  sheet.addEventListener('pointerup', endDrag);
-  sheet.addEventListener('pointercancel', endDrag);
+  sheet.addEventListener('pointerup', e => { if (drag && drag.id === e.pointerId) dragEnd(e.clientY, false); });
+  sheet.addEventListener('pointercancel', e => { if (drag && drag.id === e.pointerId) dragEnd(0, true); });
+  sheet.addEventListener('click', e => { if (performance.now() < noClickUntil) { e.stopPropagation(); e.preventDefault(); } }, true);
   window.addEventListener('resize', () => setSheet(S.sheet));
 
   inner.addEventListener('click', e => {
@@ -2055,7 +2112,7 @@
   function select(kind, id, fly) {
     S.kind = kind; S.sel = id; S.view = '';
     haptic();
-    if (S.sheet === 'peek' || S.sheet === 'mini') setSheet('half');
+    if (curY() > stops().half + 1) setSheet('half');   // closed or less than half open: open to half
     inner.scrollTop = 0;
     renderSheet();
     if (S.mapReady) renderMap();
@@ -2095,7 +2152,7 @@
       const brg = p ? bearing(p.lat, p.lon, d.lat, d.lon) : map.getBearing();
       // give the 3D scene the screen, and aim so the floating drone (not the ground under it) lands mid-screen: in a 62 deg tilt a
       // drone at height h sits h*sin(62)/(metres per pixel) above its ground spot (it ended up at the top edge, under the header)
-      if (S.sheet === 'half' || S.sheet === 'full') setSheet('peek');
+      if (sheetOpen()) setSheet('peek');
       S.view = ''; renderSheet();
       const z = Math.max(map.getZoom(), 16), Z = droneZ(d, d.lat, d.lon, d.height);
       CAM.easeUntil = performance.now() + 3400;   // let the tilt finish before the 3D camera takes over
@@ -2241,7 +2298,7 @@
     const want = h ? Math.max(150, Math.min(300, Math.round(h.getBoundingClientRect().bottom - sheet.getBoundingClientRect().top + 12))) : 150;
     if (want !== S.peekH) {
       const first = S.peekH == null; S.peekH = want;
-      if (S.sheet === 'peek' && drag === null) placeSheet(stops().peek);
+      if (S.sheet === 'peek' && !dragging()) placeSheet(stops().peek);
       if (first && S.fitted && !S.sel) setTimeout(() => fitAll(false), 60);   // first card: re-fit so the pilot isn't under it
     }
   }
@@ -2272,10 +2329,10 @@
     const first = !S.seen; S.seen = S.seen || new Set();   // drones already there when the app opens don't count as new
     const fresh = !first && drones.some(d => isLive(d) && !S.seen.has(d.id));
     drones.forEach(d => S.seen.add(d.id));
-    if (fresh && S.sheet === 'mini' && drag === null) setSheet('peek');
+    if (fresh && S.sheet === 'mini' && !dragging()) setSheet('peek');
     syncRows(inner.querySelector('[data-f="drones"]'), drones.slice(1), d => d.id, makeDroneRow, updDroneRow);
     fitPeek();
-    if (S.sheet === 'mini' && drag === null && stops().mini !== S.sheetY) setSheet('mini');
+    if (S.sheet === 'mini' && !dragging() && stops().mini !== S.sheetY) setSheet('mini');
     let acs = S.settings.aircraft ? (st.aircraft || []).filter(a => !a.ground) : [];
     if (p) acs = acs.map(a => [a, dist(p.lat, p.lon, a.lat, a.lon)]).sort((x, y) => x[1] - y[1]).map(x => x[0]);
     inner.querySelector('[data-f="achead"]').classList.toggle('hidden', !acs.length);
@@ -2736,7 +2793,7 @@
   async function openFlights() {
     if (S.rp) stopReplay(true);
     S.kind = 'flights'; S.sel = 'flights'; S.view = '';
-    if (S.sheet === 'peek' || S.sheet === 'mini') setSheet('half');
+    if (curY() > stops().half + 1) setSheet('half');   // closed or less than half open: open to half
     inner.scrollTop = 0;
     renderSheet();
     await rpIndex();
@@ -2978,7 +3035,7 @@
       if (!imgModal.classList.contains('hidden')) { imgModal.classList.add('hidden'); return true; }
       if (!repModal.classList.contains('hidden')) { repModal.classList.add('hidden'); return true; }
       if (S.sel) { deselect(); return true; }
-      if (S.sheet === 'half' || S.sheet === 'full') { setSheet('peek'); return true; }
+      if (sheetOpen()) { setSheet('peek'); return true; }
       return false;
     },
   };
