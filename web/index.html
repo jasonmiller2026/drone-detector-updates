@@ -59,6 +59,7 @@
   </button>
 </header>
 
+<div id="net-chip" class="net-chip glass hidden"></div>
 <div id="wind" class="wind glass liquid hidden" role="button" aria-label="Wind">
   <div class="wind-row">
     <div class="rose" id="wind-rose">
@@ -119,6 +120,8 @@
       <label class="set"><div><div class="set-name">Road and place names</div><div class="set-sub">Labels over the aerial map</div></div><input type="checkbox" data-set="labels"><span class="sw"></span></label>
       <label class="set"><div><div class="set-name">Planes and helicopters</div><div class="set-sub">ADS-B within 15 nm (adsb.lol)</div></div><input type="checkbox" data-set="aircraft"><span class="sw"></span></label>
     </div>
+    <div class="set-h hidden" id="hh-h">Drone Detector handheld</div>
+    <div class="set-card hidden" id="hh-card"></div>
     <div class="set-h">Receiver</div>
     <div class="set-card">
       <label class="set"><div><div class="set-name">Demo flight</div><div class="set-sub">Made-up flights: a Matrice and a Mavic searching woods, an Agras T50 spraying a field</div></div><input type="checkbox" data-set="demo"><span class="sw"></span></label>
@@ -126,6 +129,8 @@
       <label class="set" id="set-rider"><div><div class="set-name">Dronetag RIDER</div><div class="set-sub">Also show the drones a RIDER hears, over Bluetooth. Turning it off forgets the RIDER.</div></div><input type="checkbox" data-set="rider"><span class="sw"></span></label>
       <div class="set-buttons"><button class="btn" id="btn-reconnect">Reconnect receiver</button><button class="btn" id="btn-clear">Clear tracks</button></div>
     </div>
+    <div class="set-h hidden" id="areas-h">Saved areas</div>
+    <div class="set-card hidden" id="areas-card"></div>
     <div class="set-h">Google satellite</div>
     <div class="set-card">
       <div class="set-key"><div class="set-name">Google Maps API key</div>
@@ -146,6 +151,14 @@
   </div>
 </div>
 
+<div id="hh-wifi" class="modal hidden">
+  <div class="modal-card glass-solid">
+    <div class="modal-head"><div class="modal-title">Handheld Wi-Fi</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
+    <div id="wifi-body"></div>
+    <div class="set-sub" style="margin:12px 2px 4px">The handheld joins 2.4 GHz networks only, and reaches less far than your phone. Hotel and campground networks that need a sign-in page don't work.</div>
+  </div>
+</div>
+
 <div id="report" class="modal hidden">
   <div class="modal-card glass-solid">
     <div class="modal-head"><div class="modal-title">Problem report saved</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
@@ -159,11 +172,11 @@
   <div class="modal-card glass-solid">
     <div class="modal-head"><div class="modal-title">Map imagery</div><button class="icon-btn plain" data-close aria-label="Close">✕</button></div>
     <button class="img-opt" data-base="latest"><img class="thumb" data-thumb="latest" alt="">
-      <div class="img-txt"><div class="set-name">Satellite · latest</div><div class="set-sub" id="cap-latest">Esri World Imagery, newest available</div></div><span class="radio"></span></button>
+      <div class="img-txt"><div class="set-name">Satellite · latest <span class="needs-data">Needs data</span></div><div class="set-sub" id="cap-latest">Esri World Imagery, newest available</div></div><span class="radio"></span></button>
     <button class="img-opt" data-base="google"><img class="thumb" data-thumb="google" alt="">
-      <div class="img-txt"><div class="set-name">Google satellite</div><div class="set-sub" id="cap-google">Add your Google Maps API key in Settings to use this.</div></div><span class="radio"></span></button>
+      <div class="img-txt"><div class="set-name">Google satellite <span class="needs-data">Needs data</span></div><div class="set-sub" id="cap-google">Add your Google Maps API key in Settings to use this.</div></div><span class="radio"></span></button>
     <button class="img-opt" data-base="ohio"><img class="thumb" data-thumb="ohio" alt="">
-      <div class="img-txt"><div class="set-name">Ohio leaf-off · 3–6 inch <span class="pill leaf">LEAF-OFF</span></div><div class="set-sub" id="cap-ohio">Statewide aerial photos (OSIP III, 2017–2024). Sharpest close-up; Ohio only.</div></div><span class="radio"></span></button>
+      <div class="img-txt"><div class="set-name">Ohio leaf-off · 3–6 inch <span class="pill leaf">LEAF-OFF</span> <span class="needs-data">Needs data</span></div><div class="set-sub" id="cap-ohio">Statewide aerial photos (OSIP III, 2017–2024). Sharpest close-up; Ohio only.</div></div><span class="radio"></span></button>
     <div class="sh-section">3D view</div>
     <button class="img-opt" data-look="sat"><img class="thumb" data-thumb="look-sat" alt="">
       <div class="img-txt"><div class="set-name">Satellite photo</div><div class="set-sub">The imagery picked above, draped over the hills.</div></div><span class="radio"></span></button>
@@ -173,7 +186,11 @@
     <label class="set img-toggle"><div><div class="set-name">LAANC ceilings</div><div class="set-sub">FAA grid near airports: the highest you can get approved in each square (zoom in to see)</div></div><input type="checkbox" id="laanc-toggle"><span class="sw"></span></label>
     <label class="set img-toggle"><div><div class="set-name">Stadium rings</div><div class="set-sub">3 NM no-drone rings that apply during games and events</div></div><input type="checkbox" id="stadium-toggle"><span class="sw"></span></label>
     <div class="set-sub" style="padding:2px 4px 10px">Always shown with airspace on: Class B, C, D, E with altitude blocks, restricted, prohibited, warning, MOA and alert areas, national-security drone no-fly zones and standing defense TFRs. Live TFRs are not included yet: check the FAA's TFR list before flying.</div>
-    <div class="sh-section">Imagery history here</div>
+    <div class="sh-section">No signal</div>
+    <div class="set-sub" style="padding:2px 4px 4px">Save the topo map and terrain of the area on screen, up to 25 x 25 mi, to use where there is no data. Satellite photos can't be saved.</div>
+    <div class="set-buttons" style="margin:8px 0 6px"><button class="btn" id="btn-save-area">Save this area for no signal</button></div>
+    <div class="set-sub" id="save-area-prog" style="padding:0 4px 8px"></div>
+    <div class="sh-section">Imagery history here <span class="needs-data">Needs data</span></div>
     <div id="hist-list"></div>
   </div>
 </div>

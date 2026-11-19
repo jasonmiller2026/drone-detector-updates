@@ -1018,7 +1018,7 @@
   // vs fields). Jason chose "Satellite + topo option": 3D keeps the satellite photo by default, with the USGS topo map (green woods,
   // contours, water, road names) as an option. 2D always shows the photo. Saved on this phone as rid.look3d.
   S.look3d = store.get('look3d') === 'topo' ? 'topo' : 'sat';
-  const topoOn = () => S.mode3d && S.look3d === 'topo';
+  const topoOn = () => (S.mode3d && S.look3d === 'topo') || S.offline;   // no data: the saved topo map, flat or 3D (offline-4)
   function applyLook() {
     if (!S.mapReady) return;
     try {
@@ -2507,6 +2507,14 @@
   }
 
   // ------------------------------------------------------------------ status + banner
+  // the Stubby handheld in the header's words (RidService.handheldWord says the same in the notification)
+  function handheldWord(h, t) {
+    if (!h) return null;
+    if (h.state === 'approved') return t - (h.lastDrone || 0) < 15 ? 'Handheld live' : 'Handheld listening';
+    return { lost: 'Looking for the handheld…', connecting: 'Connecting to the handheld…', pairing: 'Pairing with the handheld…',
+      'no-permission': 'Handheld: allow Nearby devices', 'bluetooth-off': 'Handheld: turn on Bluetooth', 'location-off': 'Handheld: turn on Location',
+      'old-app': 'Handheld: update the app', 'no-bluetooth': 'No Bluetooth' }[h.state] || null;
+  }
   function renderStatus() {
     const st = S.rp && S.liveSt ? S.liveSt : S.st, u = st.usb || {};
     const nLive = st.drones.filter(isLive).length, nAc = S.settings.aircraft ? (st.aircraft || []).filter(a => !a.ground).length : 0;
@@ -2531,6 +2539,11 @@
     else { cls = 'bad'; txt = 'Plug in the receiver'; }
     const extra = [];   // Bluetooth / Wi-Fi helpers: a Dronetag RIDER and the phone's own radios
     let extraOk = false;
+    const hh = !st.detectors && st.handheld ? st.handheld : null, hw = handheldWord(hh, st.t);   // the Stubby handheld over Bluetooth
+    if (hw) { extra.push(hw); if (hh.state === 'approved') extraOk = true; }
+    if (hh && hh.state === 'approved' && hh.hb && hh.hb.rx) for (const [k, n] of [['wifi', 'Wi-Fi'], ['bt', 'Bluetooth']]) {   // hand-6, open-12
+      const x = hh.hb.rx[k]; if (x && (x.health === 'fault' || x.health === 'down')) extra.push(`${n} receiver not running`);
+    }
     const rd = !st.detectors && st.rider && st.rider.state !== 'off' ? st.rider : null;   // Dronetag RIDER over Bluetooth
     if (rd) {
       const rOk = rd.state === 'connected';
@@ -2591,10 +2604,222 @@
     const pc = $('#phone-caps'); if (pc) pc.innerHTML = phoneCaps(pst);
     // app 0.2.13 and older have no phone radios: hide the switch there, so these screens can ship before the 0.2.14 app
     $('#set-phone')?.classList.toggle('hidden', !A || !pst);
+    renderHandheld(true);
     try { if (A && A.updateStatus) renderUpdate(JSON.parse(A.updateStatus())); } catch (e) { }
     const v = A ? A.version() : 'browser preview', lp = A ? A.logsPath() : '';
     $('#set-foot').innerHTML = `Version ${esc(v)}<br>${lp ? 'Logs: ' + esc(lp) + '<br>' : ''}Imagery © Esri, Maxar, Earthstar Geographics · Terrain: Mapzen / AWS · Aircraft: adsb.lol`;
   }
+  // ------------------------------------------------------------------ maps with no signal (spec use-maps-with-no-signal.md)
+  // Native side: OfflineMaps.kt keeps the saved areas and answers the map's topo, terrain and font requests from them.
+  S.offline = false;
+  function offlineSt() { const st = S.liveSt || S.st || {}; return st.offline || null; }
+  function inSaved(lng, lat) {
+    const o = offlineSt();
+    return !!(o && o.areas && o.areas.some(a => a.bbox && lng >= a.bbox[0] && lng <= a.bbox[2] && lat >= a.bbox[1] && lat <= a.bbox[3]));
+  }
+  let areasSig = '';
+  function renderOffline() {
+    const o = offlineSt();
+    const off = !!(o && o.online === false);
+    if (off !== S.offline) { S.offline = off; applyLook(); log('MAP', off ? 'no data: showing the saved topo map' : 'data back'); }
+    const chip = $('#net-chip');
+    if (!off) chip.classList.add('hidden');
+    else {
+      const c = S.mapReady ? map.getCenter() : null;
+      chip.textContent = c && inSaved(c.lng, c.lat) ? 'No data: showing your saved map' : 'No saved map here. Save an area before you go.';
+      chip.classList.remove('hidden');
+    }
+    const j = o && o.job;
+    $('#save-area-prog').textContent = j ? `Saving "${j.name}": ${Math.floor(j.done / Math.max(1, j.total) * 100)}% · ${Math.round(j.mb)} MB so far` : '';
+    $('#btn-save-area').textContent = j ? 'Cancel saving' : 'Save this area for no signal';
+    // Settings › Saved areas (offline-7)
+    const areas = (o && o.areas) || [];
+    $('#areas-h').classList.toggle('hidden', !A || !o); $('#areas-card').classList.toggle('hidden', !A || !o);
+    const sig = JSON.stringify(areas.map(a => [a.id, a.name, a.complete, a.bytes, a.missing]));
+    if (sig === areasSig) return;
+    areasSig = sig;
+    const day = ms => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    $('#areas-card').innerHTML = areas.length ? areas.map(a => `<div class="area-row"><div class="set-name">${esc(a.name)}</div>
+      <div class="set-sub">${Math.round(a.sqMi)} sq mi · ${a.complete ? Math.round((a.bytes || 0) / 1048576) + ' MB' : a.missing ? 'some tiles missing' : 'saving…'} · saved ${day(a.saved)}</div>
+      <div class="set-buttons"><button class="btn" data-area-go="${esc(a.id)}">Show</button><button class="btn" data-area-ren="${esc(a.id)}">Rename</button><button class="btn" data-area-del="${esc(a.id)}">Delete</button></div></div>`).join('')
+      : '<div class="area-row"><div class="set-sub">No saved areas yet. Open the map layers and tap "Save this area for no signal" before you go where there is no data.</div></div>';
+  }
+  $('#btn-save-area').addEventListener('click', () => {
+    const o = offlineSt();
+    if (!A || !A.offlineEstimate || !S.mapReady) return;
+    if (o && o.job) { A.offlineCancel(); haptic(); return; }
+    if (o && o.online === false) { alert('Saving an area needs data. Save it before you go.'); return; }
+    const b = map.getBounds(), c = map.getCenter();
+    let w = b.getWest(), s = b.getSouth(), e = b.getEast(), n = b.getNorth(), clipped = false;
+    // at most 25 x 25 mi per area (open-21): a bigger view saves the 25 x 25 mi around the middle of the screen
+    const dLat = 12.5 / 69, dLon = 12.5 / (69.17 * Math.cos(rad(c.lat)));
+    if (n - s > 2 * dLat) { s = c.lat - dLat; n = c.lat + dLat; clipped = true; }
+    if (e - w > 2 * dLon) { w = c.lng - dLon; e = c.lng + dLon; clipped = true; }
+    const est = JSON.parse(A.offlineEstimate(w, s, e, n));
+    if (!confirm(`Save this area for no signal?\n\n${est.wMi.toFixed(1)} x ${est.hMi.toFixed(1)} mi (${Math.round(est.sqMi)} sq mi)` +
+      `${clipped ? ': the most one area can hold, around the middle of the screen' : ''}. Topo map and terrain only.\n\n` +
+      `Takes about ${Math.round(est.mb)} MB on this phone (${(est.freeMb / 1024).toFixed(1)} GB free).`)) return;
+    const name = prompt('Name this area', 'Area saved ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+    if (name === null) return;
+    const r = A.offlineSave(name, w, s, e, n);
+    if (r === 'no-space') alert('There isn\'t enough free space on this phone for that area.');
+    else if (r === 'busy') alert('Another area is still saving.');
+    else if (r === 'too-big') alert('That area is too big. Zoom in to 25 x 25 mi or less.');
+    haptic(); renderOffline();
+  });
+  $('#areas-card').addEventListener('click', e => {
+    const g = e.target.closest('[data-area-go]'), rn = e.target.closest('[data-area-ren]'), dl = e.target.closest('[data-area-del]');
+    const o = offlineSt(), find = id => ((o && o.areas) || []).find(a => a.id === id);
+    if (g) { const a = find(g.dataset.areaGo); if (a && S.mapReady) { modal.classList.add('hidden'); map.fitBounds([[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[3]]], { padding: 30, duration: 800 }); } }
+    if (rn) { const a = find(rn.dataset.areaRen); const nm = a && prompt('Rename this area', a.name); if (nm) { A.offlineRename(a.id, nm); areasSig = ''; } }
+    if (dl) { const a = find(dl.dataset.areaDel); if (a && confirm(`Delete "${a.name}"? Its saved map can't be used with no data any more.`)) { A.offlineDelete(a.id); areasSig = ''; } }
+    haptic();
+  });
+  // ---------- the Stubby handheld over Bluetooth (spec hand-14, hand-17, hand-18; firmware/s3_main/PHONE_LINK.md)
+  // Not paired: "Add a handheld" lists the ones in range; the user presses the handheld's pair button (a 60 s pairing window)
+  // and taps it. Paired: its state, battery, receivers, a few of its settings, Find it and Forget.
+  const hhCard = $('#hh-card');
+  let hhSig = '', hhHold = 0;   // re-draw only when something shown changes, and not while a slider is held
+  function hhState() { const st = S.liveSt || S.st || {}; return st.handheld || null; }
+  const HH_SET = [['led_pct', 'Light brightness', 'Dim', 'Bright'], ['buzzer_pct', 'Buzzer loudness', 'Quiet', 'Loud']];
+  function renderHandheld(force) {
+    const h = hhState(), t = (S.liveSt || S.st || {}).t || 0;
+    $('#hh-h').classList.toggle('hidden', !h); hhCard.classList.toggle('hidden', !h);
+    if (!h || (!force && Date.now() < hhHold)) return;
+    const hb = h.hb || {}, bat = hb.bat || {}, rx = hb.rx || {}, set = h.settings || {}, ack = h.lastAck;
+    const HH_NAMES = { led_pct: 'Light brightness', buzzer_pct: 'Buzzer loudness', beep_new: 'Beep on a new drone' };
+    const refused = ack && ack.cmd === 'settings.set' && ack.ok === false && t - (ack._t || 0) < 15
+      ? String(ack.msg || ack.err).replace(/^(\w+):/, (m, k) => (HH_NAMES[k] || k) + ' must be') : '';   // cloud-9: "the app says so"
+    const found = h.found || [];
+    const sig = JSON.stringify([h.state, h.saved, h.name, h.note, h.picking, h.pairingOpen, found.map(f => [f.addr, f.name, f.window, Math.round(f.rssi / 6)]),
+      h.serial, h.fw && h.fw.s3, bat.pct, bat.charging, rx.wifi && rx.wifi.health, rx.bt && rx.bt.health, set, refused, t - (h.lastDrone || 0) < 15, h.update]);
+    if (!force && sig === hhSig) return;
+    hhSig = sig;
+    let html = '';
+    if (!h.saved && h.state !== 'approved') {
+      html += `<div class="hh-top"><div class="set-name">Not paired</div><div class="set-sub">The handheld hears drones and sends them to this phone over Bluetooth. No cell signal needed.</div>`;
+      if (h.picking || ['picking', 'pairing', 'connecting'].includes(h.state)) {
+        html += `<div class="set-sub" style="margin-top:8px">Press the pair button on the handheld once (its light flashes blue), then tap it below.</div><div class="hh-list">`;
+        html += found.length ? found.map(f => `<button class="hh-row" data-hh-pick="${esc(f.addr)}"><b>${esc(f.name)}</b><span class="${f.window ? 'hh-ready' : ''}">${
+          h.state === 'pairing' || h.state === 'connecting' ? 'Pairing…' : f.window ? 'Ready to pair' : f.window === false ? 'Press its pair button' : bars(f.rssi)}</span></button>`).join('')
+          : `<div class="set-sub">Looking for handhelds…</div>`;
+        html += `</div>`;
+      }
+      if (h.note) html += `<div class="hh-note">${esc(h.note)}</div>`;
+      html += `</div><div class="set-buttons">${h.picking || h.state === 'picking' ? '<button class="btn" data-hh="stop">Cancel</button>' : '<button class="btn primary" data-hh="add">Add a handheld</button>'}</div>`;
+    } else {
+      const word = handheldWord(h, t) || 'Not connected';
+      const parts = [];
+      if (h.state === 'approved') {
+        if (bat.pct != null) parts.push(`Battery ${bat.pct}%${bat.charging ? ', charging' : ''}`);
+        const rxw = [['wifi', 'Wi-Fi'], ['bt', 'Bluetooth']].map(([k, n]) => { const x = rx[k]; if (!x) return '';
+          return x.health === 'fault' || x.health === 'down' ? `<span class="hh-bad">${n} receiver not running${x.faults && x.faults.length ? ' (' + esc(x.faults.join(', ')) + ')' : ''}</span>` : `${n} receiver ${x.health === 'ok' ? 'OK' : x.health === 'unknown' ? 'not reported yet' : esc(x.health)}`; }).filter(Boolean);
+        if (rxw.length) parts.push(rxw.join(' · '));
+      }
+      if (h.serial) parts.push(`Serial ${esc(h.serial)}${h.fw && h.fw.s3 ? ' · software ' + esc(h.fw.s3) : ''}`);
+      html += `<div class="hh-top"><div class="set-name">${esc(h.name || 'Drone Detector handheld')}</div><div class="hh-ok">${esc(word)}${parts.length ? '<br>' + parts.join('<br>') : ''}</div>`;
+      if (h.note) html += `<div class="hh-note">${esc(h.note)}</div>`;
+      html += `</div>`;
+      if (h.state === 'approved' && set) {
+        for (const [k, n, lo, hi] of HH_SET) if (set[k] != null)
+          html += `<div class="hh-set"><div class="set-name">${n}</div><div class="slider-row"><span>${lo}</span><input type="range" min="0" max="100" step="5" value="${+set[k]}" data-hh-set="${k}"><span>${hi}</span></div></div>`;
+        if (set.beep_new != null) html += `<label class="set"><div><div class="set-name">Beep on a new drone</div><div class="set-sub">The handheld beeps when no phone is connected</div></div><input type="checkbox" data-hh-bool="beep_new"${set.beep_new ? ' checked' : ''}><span class="sw"></span></label>`;
+        if (refused) html += `<div class="hh-note">The handheld didn't take that change: ${esc(refused)}. It kept its old setting.</div>`;
+      }
+      if (h.state === 'approved') html += `<div class="set-buttons"><button class="btn" data-hh="wifi">Wi-Fi</button><button class="btn" data-hh="beep">Find it (beep)</button></div>`;
+      // update from the phone (hupdate-1): an update file the user picks, as there is no update server yet
+      const u = h.update || { state: 'none' }, ui = u.info || {};
+      if (h.state === 'approved' || u.state !== 'none') {
+        const what = ui.part ? `${esc(ui.part)} software ${esc(ui.version)} · ${(ui.size / 1048576).toFixed(1)} MB` : '';
+        const line = { ready: `Ready to install: ${what}`, starting: 'Starting the update…', sending: `Sending the update: ${u.pct}%`,
+          waiting: `Waiting for the handheld to come back (${u.pct}% sent; it carries on where it stopped)`, verifying: 'The handheld is checking the update…',
+          waiting_idle: 'The update installs once no drone has been heard for 60 s.', installing: 'Installing: the handheld restarts in a moment.',
+          done: `Update finished. The handheld runs software ${esc(h.fw && h.fw.s3 || '?')}.` }[u.state];
+        html += `<div class="hh-set"><div class="set-name">Update the handheld</div>${line ? `<div class="hh-ok">${line}</div>` : ''}${u.state === 'failed' ? `<div class="hh-note">${esc(u.error || 'The update failed.')}</div>` : ''}` +
+          `<div class="set-buttons" style="margin:10px 0 2px">${u.state === 'ready' ? '<button class="btn" data-hh="upd-cancel">Cancel</button><button class="btn primary" data-hh="upd-go">Install</button>'
+            : ['starting', 'sending', 'waiting'].includes(u.state) ? '<button class="btn" data-hh="upd-cancel">Stop the update</button>'
+            : ['verifying', 'waiting_idle', 'installing'].includes(u.state) ? '' : '<button class="btn" data-hh="upd-pick">Install an update file</button>'}</div></div>`;
+      }
+      html += `<div class="set-buttons" style="margin-top:0"><button class="btn" data-hh="forget">Forget this handheld</button></div>`;
+    }
+    hhCard.innerHTML = html;
+  }
+  const bars = r => r > -60 ? 'Strong signal' : r > -75 ? 'Good signal' : 'Weak signal';
+  hhCard.addEventListener('click', e => {
+    const p = e.target.closest('[data-hh-pick]'); if (p && A) { A.handheldConnect(p.dataset.hhPick); haptic(); return; }
+    const b = e.target.closest('[data-hh]'); if (!b || !A) return;
+    const a = b.dataset.hh;
+    if (a === 'add') A.handheldPick(true);
+    else if (a === 'stop') A.handheldPick(false);
+    else if (a === 'beep') A.handheldCmd(JSON.stringify({ cmd: 'beep', ms: 1000 }));
+    else if (a === 'wifi') openWifi();
+    else if (a === 'upd-pick') A.hhUpdatePick();
+    else if (a === 'upd-go') A.hhUpdateStart();
+    else if (a === 'upd-cancel') A.hhUpdateCancel();
+    else if (a === 'forget') { if (!confirm('Forget this handheld? To use it again, press its pair button and add it again.')) return; A.handheldForget(); }
+    haptic();
+  });
+  hhCard.addEventListener('pointerdown', e => { if (e.target.closest('input[type=range]')) hhHold = Date.now() + 60000; });
+  hhCard.addEventListener('change', e => {
+    const r = e.target.closest('[data-hh-set]'), c = e.target.closest('[data-hh-bool]');
+    hhHold = Date.now() + 1500;   // give the handheld a moment to answer before re-drawing
+    if (r && A) A.handheldCmd(JSON.stringify({ cmd: 'settings.set', settings: { [r.dataset.hhSet]: +r.value } }));
+    if (c && A) A.handheldCmd(JSON.stringify({ cmd: 'settings.set', settings: { [c.dataset.hhBool]: c.checked } }));
+    e.stopPropagation();
+  });
+  // ---------- the handheld's Wi-Fi screen (spec wifi-1..6). HandheldWifi.kt runs Espressif's provisioning over Bluetooth;
+  // the password typed here goes straight to the handheld over the paired link and is not kept.
+  const wifiModal = $('#hh-wifi'), wifiBody = $('#wifi-body');
+  let wifiPick = null, wifiSig = '';
+  const LOCK = '<svg class="lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="2" fill="none"/></svg>';
+  function openWifi() { wifiPick = null; wifiSig = ''; if (A && A.wifiOpen) A.wifiOpen(); wifiModal.classList.remove('hidden'); renderWifi(); }
+  function closeWifi() { wifiModal.classList.add('hidden'); if (A && A.wifiClose) A.wifiClose(); }
+  wifiModal.addEventListener('click', e => { if (e.target === wifiModal || e.target.closest('[data-close]')) closeWifi(); });
+  function renderWifi() {
+    if (wifiModal.classList.contains('hidden')) return;
+    const h = hhState() || {}, w = h.wifi || {}, saved = (h.wifiList && h.wifiList.saved) || [], conn = h.wifiList && h.wifiList.connected;
+    const sig = JSON.stringify([w.state, w.error, w.result, w.joining, (w.networks || []).map(n => [n.ssid, Math.round(n.rssi / 8), n.lock]), saved.map(x => x.ssid), conn, wifiPick]);
+    if (sig === wifiSig) return;
+    if (document.activeElement && document.activeElement.id === 'wifi-pw') return;   // never wipe a password being typed
+    wifiSig = sig;
+    let html = '';
+    const msg = { opening: "Opening the handheld's Wi-Fi setup…", scanning: 'Looking for networks the handheld can hear…' }[w.state];
+    if (msg) html += `<div class="wifi-msg">${msg}</div>`;
+    if (w.state === 'error') html += `<div class="wifi-msg bad">${esc(w.error || 'Something went wrong.')}</div>`;
+    if (w.state === 'joining') html += `<div class="wifi-msg">Joining ${esc(w.joining || '')}…</div>`;
+    if (w.state === 'done' && w.result) html += `<div class="wifi-msg ${/^Connected/.test(w.result) ? 'good' : 'bad'}">${esc(w.result)}</div>`;
+    if (saved.length) {
+      html += `<div class="sh-section">Saved on the handheld</div><div class="hh-list">` + saved.map(x =>
+        `<div class="hh-row"><b>${esc(x.ssid)}</b><span>${x.ssid === conn ? 'Connected · ' : ''}<button class="btn" style="height:32px;padding:0 12px;font-size:13px" data-wifi-forget="${esc(x.ssid)}">Forget this network</button></span></div>`).join('') + '</div>';
+    }
+    const nets = w.networks || [];
+    if (wifiPick) {
+      const n = nets.find(x => x.ssid === wifiPick) || { ssid: wifiPick, lock: true };
+      html += `<div class="sh-section">${esc(n.ssid)}</div>` + (n.lock ? `<input id="wifi-pw" class="wifi-pw" type="password" placeholder="Wi-Fi password" autocomplete="off" autocapitalize="off" spellcheck="false">` : '<div class="set-sub">Open network: no password.</div>') +
+        `<div class="set-buttons"><button class="btn" data-wifi="back">Back</button><button class="btn primary" data-wifi="join">Join</button></div>`;
+    } else if (w.state === 'list' || w.state === 'done' || nets.length) {
+      html += `<div class="sh-section">Networks the handheld hears</div><div class="hh-list">` +
+        (nets.length ? nets.map(n => `<button class="hh-row" data-wifi-pick="${esc(n.ssid)}"><b>${n.lock ? LOCK : ''}${esc(n.ssid)}</b><span>${bars(n.rssi)}</span></button>`).join('')
+          : '<div class="set-sub">No 2.4 GHz networks in reach of the handheld.</div>') + '</div>' +
+        `<div class="set-buttons"><button class="btn" data-wifi="rescan">Look again</button></div>`;
+    } else if (w.state === 'error' || w.state === 'idle') html += `<div class="set-buttons"><button class="btn" data-wifi="retry">Try again</button></div>`;
+    wifiBody.innerHTML = html;
+    if (wifiPick) setTimeout(() => $('#wifi-pw')?.focus(), 50);
+  }
+  wifiBody.addEventListener('click', e => {
+    const p = e.target.closest('[data-wifi-pick]'), f = e.target.closest('[data-wifi-forget]'), b = e.target.closest('[data-wifi]');
+    if (p) { wifiPick = p.dataset.wifiPick; renderWifi(); }
+    else if (f) { if (confirm(`Forget ${f.dataset.wifiForget} on the handheld?`)) A.handheldCmd(JSON.stringify({ cmd: 'wifi.forget', ssid: f.dataset.wifiForget })); setTimeout(() => A.handheldCmd(JSON.stringify({ cmd: 'wifi.list' })), 600); }
+    else if (b) {
+      const a = b.dataset.wifi;
+      if (a === 'back') wifiPick = null;
+      else if (a === 'rescan') A.wifiRescan();
+      else if (a === 'retry') A.wifiOpen();
+      else if (a === 'join') { const pw = $('#wifi-pw'); A.wifiJoin(wifiPick, pw ? pw.value : ''); if (pw) pw.value = ''; wifiPick = null; document.activeElement && document.activeElement.blur(); }
+      wifiSig = ''; renderWifi();
+    }
+    haptic();
+  });
   modal.addEventListener('change', e => {
     const cb = e.target.closest('[data-set]'); if (!cb) return;
     const k = cb.dataset.set, v = cb.checked;
@@ -2996,7 +3221,7 @@
       if (S.rp) {   // replaying: keep the live picture for when the replay ends; the replay draws the map and card
         S.liveSt = st; assignColors(st.drones);
         if (st.settings) { const lab = S.settings.labels; Object.assign(S.settings, st.settings); if (lab !== S.settings.labels) applyLabels(); }
-        renderStatus(); return;
+        renderStatus(); if (!modal.classList.contains('hidden')) renderHandheld(); return;
       }
       S.st = st; S.t = st.t;
       assignColors(st.drones);
@@ -3005,7 +3230,9 @@
         Object.assign(S.settings, st.settings);
         if (lab !== S.settings.labels) applyLabels();
       }
-      renderStatus();
+      renderStatus(); renderOffline();
+      if (!modal.classList.contains('hidden')) renderHandheld();
+      renderWifi();
       if (S.mapReady) { renderMap(); firstFit(); followCam(); }
       renderSheet();
       if (!WIND.at && !WIND.asked && (me() || S.mapReady)) { WIND.asked = true; loadWind(); }
