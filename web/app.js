@@ -93,6 +93,7 @@
     nav: '<svg viewBox="0 0 24 24"><path d="M3.5 11.2 20.5 3.5l-7.7 17-2.1-7.2z" fill="currentColor"/></svg>',
     pin: '<svg viewBox="0 0 24 24"><path d="M12 21.5s-6.5-6.2-6.5-11.4a6.5 6.5 0 0 1 13 0c0 5.2-6.5 11.4-6.5 11.4Z" fill="none" stroke="currentColor" stroke-width="1.9"/><circle cx="12" cy="10" r="2.4" fill="currentColor"/></svg>',
     follow: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.9"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/><path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+    sky: '<svg viewBox="0 0 24 24"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/></svg>',
     cube: '<svg viewBox="0 0 24 24"><path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2Z M4 7.2l8 4.4 8-4.4 M12 11.6v9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
     fit: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     hist: '<svg viewBox="0 0 24 24"><path d="M4.6 12.4A7.5 7.5 0 1 0 6.8 6.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5.6 3.6v3.8h3.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 8v4.4l2.9 1.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -1799,6 +1800,17 @@
     const up = gO != null && Z.z != null ? Z.z - (gO + 1.6) : null;
     return { D, brg, up, elev: up != null ? Math.atan2(up, Math.max(1, D)) * 180 / Math.PI : null, gO, Z };
   }
+  // "Find in sky" (spec find-a-drone-in-the-sky.md): the camera view is drawn by the app; it gets each drone's colour, short
+  // name and takeoff ground from here, so its rings, names and heights match the map
+  const skyOk = () => !!(A && typeof A.openSky === 'function');
+  function openSky(d) {
+    if (!skyOk() || !S.st) return;
+    const p = me(), ctx = { sel: d && hasPos(d) ? d.id : null, gO: p ? groundOf3d(p.lat, p.lon) : null, next: cNext, drones: {} };
+    for (const x of S.st.drones) ctx.drones[x.id] = { c: dcol(x), n: shortModel(x), tg: hasPos(x) ? takeoffGround(x) : null };
+    if (window.__skyNoCam) ctx.nocam = true;   // test screenshots with no camera picture of the surroundings
+    log('SKY', `open${ctx.sel ? ' for one drone' : ''}, ground here ${ctx.gO == null ? 'unknown' : 'known'}`);
+    A.openSky(JSON.stringify(ctx));
+  }
   function povCamera(obs, d) {   // "From me" / "From pilot": a raised camera 30 m behind the observer, aimed so the drone sits in view
     const L = lookFrom(obs, d);
     if (L.D < 8 || L.gO == null || L.Z.z == null) return null;
@@ -2147,6 +2159,7 @@
       else window.open(`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lon}`);
     }
     if (a === 'follow') { S.follow = !S.follow; S.view = ''; renderSheet(); followCam(); }
+    if (a === 'sky' && d) { openSky(d); return; }
     if (a === 'view3d' && d && hasPos(d)) {
       const p = me();
       const brg = p ? bearing(p.lat, p.lon, d.lat, d.lon) : map.getBearing();
@@ -2366,6 +2379,7 @@
       <div class="pc-main"><div class="lbl">Pilot</div><div class="v" data-f="pilot"></div><div class="sub" data-f="pilotsub"></div></div></div>
       <div class="btn-row"><button class="btn primary" data-act="drive" data-f="drivebtn">${ICON.nav}Drive to pilot</button><button class="btn" style="flex:.55" data-act="pilotmap">${ICON.pin}Show</button></div></div>
     <div class="actions">
+      ${skyOk() && !S.rp ? `<button class="btn" data-act="sky" style="grid-column:span 2">${ICON.sky}Find in sky</button>` : ''}
       <button class="btn" data-act="follow" data-f="followbtn">${ICON.follow}Follow</button>
       <button class="btn" data-act="view3d">${ICON.cube}3D view</button>
       ${S.rp ? '' : `<button class="btn" data-act="replay" style="grid-column:span 2">${ICON.hist}Replay this flight</button>`}
@@ -2895,6 +2909,8 @@
     const p = me();
     if (p) { S.follow = false; flyTo(p.lat, p.lon, 15); } else if (A) A.requestLocation();
   });
+  if (skyOk()) $('#btn-sky').addEventListener('click', () => { haptic(); openSky(selDrone()); });
+  else $('#btn-sky').remove();
   $('#btn-fit').addEventListener('click', () => {
     haptic();
     if (fitAll(true) || fitAll(false)) toast('Showing all drones, pilots and you', 1600);
