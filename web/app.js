@@ -1314,12 +1314,116 @@
     const hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) + ' ft' + (p.UPPER_CODE === 'MSL' ? ' MSL' : '') : null;
     return `Class ${p.CLASS}${p.IDENT ? ' (' + p.IDENT + ')' : ''} · ${hi ? lo + ' to ' + hi : 'from ' + lo}`;
   }
-  function faaQuery(svc, where, fields, b, extra) {
-    const sig = AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined;   // a stuck request on weak LTE gives up and retries
-    return fetch(`${FAA}${svc}/FeatureServer/0/query?where=${encodeURIComponent(where)}&geometry=${b.join(',')}` +
-      `&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${fields}&outSR=4326${extra || ''}&f=geojson`, { signal: sig })
-      .then(r => r.json());
+  // The FAA layers come from one FAA ArcGIS account whose quota (6,000 request units a minute) is shared by every app in the
+  // country that shows them; at busy times it answers "Too many requests" (429) to everyone, and the old loader then blanked the
+  // no-fly layers and asked for all 8 again every 15 s. Now: every layer loaded is kept on the phone and reused (12 h, 1 h for
+  // TFRs) with no FAA request; a layer the FAA refuses keeps what the map already shows; only the missing layers are asked for,
+  // at most 3 requests at a time; and after a 429 the app waits 30 s, then 1, 2, 4 and at most 5 min before asking again.
+  const FAA_FRESH_MS = 12 * 3600e3, FAA_KEEP_MS = 28 * 86400e3, FAA_MAX_RUN = 3;
+  const FQ = { run: 0, wait: [] };
+  async function faaQuery(svc, where, fields, b, extra) {
+    if (FQ.run >= FAA_MAX_RUN) await new Promise(r => FQ.wait.push(r)); else FQ.run++;   // a finished request hands its slot on
+    try {
+      const sig = AbortSignal.timeout ? AbortSignal.timeout(25000) : undefined;   // a stuck request on weak LTE gives up and retries
+      const r = await fetch(`${FAA}${svc}/FeatureServer/0/query?where=${encodeURIComponent(where)}&geometry=${b.join(',')}` +
+        `&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${fields}&outSR=4326${extra || ''}&f=geojson`, { signal: sig });
+      const j = await r.json().catch(() => null);
+      if (r.status === 429 || (j && j.error && j.error.code === 429)) {
+        const e = new Error('FAA busy: ' + JSON.stringify((j && j.error && j.error.details) || r.status).slice(0, 200)); e.busy = true; throw e;
+      }
+      if (!j || !j.features) throw new Error(JSON.stringify((j && j.error) || j || r.status).slice(0, 200));
+      return j;
+    } finally { const next = FQ.wait.shift(); if (next) next(); else FQ.run--; }
   }
+  function faaBusy() {   // the FAA said "too many requests": wait longer each time it says it again (one round of refusals counts once)
+    if (Date.now() >= (AV.coolUntil || 0)) {
+      AV.fails = (AV.fails || 0) + 1;
+      AV.coolUntil = Date.now() + Math.min(300e3, 30e3 * 2 ** (AV.fails - 1));
+    }
+    return Math.round((AV.coolUntil - Date.now()) / 1000);
+  }
+  // the phone's copy of each FAA layer: up to 6 areas per layer, newest first, dropped after 28 days
+  const boxIn = (a, b) => a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
+  const covers = (h, view, level) => !!h && boxIn(view, h.box) && (h.level === level || h.level === 'detail');
+  let faaDbP = null;
+  function faaDb() {
+    if (!faaDbP) faaDbP = new Promise(res => {
+      try {
+        const r = indexedDB.open('faa-airspace', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('layers');
+        r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+      } catch (e) { res(null); }
+    });
+    return faaDbP;
+  }
+  async function faaCacheGet(key) {
+    const db = await faaDb(); if (!db) return [];
+    return new Promise(res => {
+      try { const q = db.transaction('layers').objectStore('layers').get(key); q.onsuccess = () => res(Array.isArray(q.result) ? q.result : []); q.onerror = () => res([]); }
+      catch (e) { res([]); }
+    });
+  }
+  async function faaCachePut(key, ent) {
+    const db = await faaDb(); if (!db) return;
+    const now = Date.now(), old = await faaCacheGet(key);
+    const list = [ent].concat(old.filter(o => now - o.t < FAA_KEEP_MS && !(boxIn(o.box, ent.box) && (o.level === ent.level || ent.level === 'detail')))).slice(0, 6);
+    try { db.transaction('layers', 'readwrite').objectStore('layers').put(list, key); } catch (e) { log('AIRSPACE', 'could not keep a copy on the phone: ' + e); }
+  }
+  const AV_SRC = [
+    { k: 'as', svc: 'Class_Airspace', fields: 'NAME,CLASS,LOCAL_TYPE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,IDENT', simp: true,
+      where: det => det ? "CLASS IN ('B','C','D','E')" : "CLASS IN ('B','C','D')" },
+    { k: 'ap', svc: 'US_Airport', fields: 'IDENT,NAME,TYPE_CODE,PRIVATEUSE,ICAO_ID,ELEVATION,SERVCITY,STATE',
+      where: det => det ? '1=1' : "PRIVATEUSE=0 AND TYPE_CODE='AD' AND ICAO_ID IS NOT NULL" },
+    { k: 'sua', svc: 'Special_Use_Airspace', fields: 'NAME,TYPE_CODE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,TIMESOFUSE,CITY,STATE', simp: true },
+    { k: 'ns', svc: 'DoD_Mar_13', fields: 'Base,Facility,Reason,Floor,Ceiling,State', simp: true },
+    { k: 'nspt', svc: 'Part_Time_National_Security_UAS_Flight_Restrictions', fields: 'Base,Facility,Reason,Floor,Ceiling,State,ACTIVETIME,ENDTIME', simp: true, fresh: 3600e3 },
+    { k: 'pro', svc: 'Prohibited_Areas', fields: 'NAME,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE', simp: true },
+    { k: 'nda', svc: 'National_Defense_Airspace_TFR_Areas', fields: 'NAME,CITY,STATE,WKHR_RMK', simp: true, fresh: 3600e3 },
+    { k: 'st', svc: 'Stadiums', fields: 'NAME,CITY,STATE', detOnly: true },
+  ];
+  AV.have = {};
+  function avDraw(det) {   // draw whatever each layer has (loaded now, or the phone's copy)
+    const F = k => (AV.have[k] && AV.have[k].features) || [];
+    for (const g of F('sua')) {
+      const p = g.properties, lo = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : ftv(p.LOWER_VAL), hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) : '';
+      p.label = `${p.NAME || SUA_NAME[p.TYPE_CODE] || ''}\n${hi ? lo + '–' + hi : lo}`;
+      p.av = 'sua';
+    }
+    const nofly = [];
+    for (const g of F('ns')) { const p = g.properties; p.kind = 'nsufr'; p.av = 'nofly'; p.label = 'NO DRONES\n' + (p.Facility || p.Base || ''); nofly.push(g); }
+    for (const g of F('nspt')) { const p = g.properties; p.kind = 'nsufr-pt'; p.av = 'nofly'; p.label = 'NO DRONES (part time)\n' + (p.Facility || p.Base || ''); nofly.push(g); }
+    for (const g of F('pro')) { const p = g.properties; p.kind = 'prohib'; p.av = 'nofly'; p.label = 'PROHIBITED\n' + (p.NAME || ''); nofly.push(g); }
+    for (const g of F('nda')) { const p = g.properties; p.kind = 'nda'; p.av = 'nofly'; p.label = 'TFR\n' + (p.NAME || '').replace(/ NATIONAL DEFENSE AIRSPACE TFR/i, ''); nofly.push(g); }
+    const ring = (lon, lat, m) => { const pts = []; for (let i = 0; i <= 72; i++) { const a = i / 72 * 2 * Math.PI;
+      pts.push([lon + m * Math.sin(a) / (111320 * Math.cos(lat * Math.PI / 180)), lat + m * Math.cos(a) / 110540]); } return pts; };
+    const stad = (det ? F('st') : []).filter(g => g.geometry && g.geometry.type === 'Point').map(g => ({ type: 'Feature',
+      properties: Object.assign({}, g.properties, { av: 'stadium', label: (g.properties.NAME || 'Stadium') + '\n3 NM during events' }),
+      geometry: { type: 'Polygon', coordinates: [ring(g.geometry.coordinates[0], g.geometry.coordinates[1], 5556)] } }));
+    map.getSource('sua').setData(fc(F('sua')));
+    map.getSource('nofly').setData(fc(nofly));
+    map.getSource('stadium').setData(fc(stad));
+    for (const f of F('as')) {
+      const p = f.properties;
+      p.k = p.LOCAL_TYPE === 'CLASS_E5' ? 'E5' : p.CLASS;
+      const lo = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : ftv(p.LOWER_VAL), hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) : '';
+      p.label = `${p.CLASS}${p.IDENT ? ' ' + p.IDENT : ''}  ${hi ? lo + '–' + hi : lo}`;
+      // sectional-style block: ceiling over floor in hundreds of feet MSL; class D shows its ceiling in brackets
+      const lo100 = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : String(Math.round(p.LOWER_VAL / 100));
+      p.alt = p.CLASS === 'D' ? (p.UPPER_VAL > 0 ? `[${Math.round(p.UPPER_VAL / 100)}]` : '') :
+        p.UPPER_VAL > 0 ? `${Math.round(p.UPPER_VAL / 100)}\n${lo100}` : '';
+      p.av = 'class';
+    }
+    for (const f of F('ap')) {
+      const p = f.properties;
+      p.kind = p.TYPE_CODE === 'HP' ? 'heli' : String(p.PRIVATEUSE) === '1' ? 'private' : 'public';
+      p.code = p.ICAO_ID || p.IDENT || '';
+    }
+    AV.airspace = F('as'); AV.airports = F('ap');
+    AV.box = AV.have.as ? AV.have.as.box : null;
+    map.getSource('airspace').setData(fc(AV.airspace));
+    map.getSource('airports').setData(fc(AV.airports));
+  }
+  function avRetry(ms) { clearTimeout(AV.retry); AV.retry = setTimeout(() => loadAviation(false), Math.max(50, ms)); }
   async function loadAviation(force) {
     if (!S.mapReady) return;
     // zoom 7+: everything (class E, private strips, heliports, stadiums); zoom 5-7: an overview (class B/C/D, special use,
@@ -1331,93 +1435,85 @@
     if (on && AVX.laanc) loadLaanc(force);
     if (!show) return;
     if (AV.busy) { AV.again = true; return; }   // looked at again as soon as the running load finishes
-    const level = z >= 7 ? 'detail' : 'overview', det = level === 'detail';
-    const bb = map.getBounds(), w = bb.getWest(), s = bb.getSouth(), e = bb.getEast(), n = bb.getNorth();
-    if (!force && AV.box && w >= AV.box[0] && s >= AV.box[1] && e <= AV.box[2] && n <= AV.box[3] && (AV.level === level || AV.level === 'detail')) return;
-    const wait = AV.failAt ? 15000 - (Date.now() - AV.failAt) : 0;
-    if (!force && wait > 0) { clearTimeout(AV.retry); AV.retry = setTimeout(() => loadAviation(false), wait); return; }
-    const m = det ? 0.6 : 0.3, dx = Math.max(0.15, (e - w) * m), dy = Math.max(0.12, (n - s) * m);
+    const level = z >= 7 ? 'detail' : 'overview', det = level === 'detail', now = Date.now();
+    const bb = map.getBounds(), view = [bb.getWest(), bb.getSouth(), bb.getEast(), bb.getNorth()];
+    const fresh = L => AV.have[L.k] && now - AV.have[L.k].t <= (L.fresh || FAA_FRESH_MS);
+    const need = AV_SRC.filter(L => (det || !L.detOnly) && (force || !covers(AV.have[L.k], view, level) || !fresh(L)));
+    if (!need.length) { avDraw(det); return; }
+    // the same area failed a moment ago: wait for the retry already set instead of asking again on every map move
+    if (!force && now < AV.nextTry && AV.tried && boxIn(view, AV.tried)) { avRetry(AV.nextTry - now); return; }
+    const [w, s, e, n] = view, m = det ? 0.6 : 0.3, dx = Math.max(0.15, (e - w) * m), dy = Math.max(0.12, (n - s) * m);
     const box = [w - dx, s - dy, e + dx, n + dy].map(v => +v.toFixed(3));
     AV.busy = true; AV.again = false;
+    let failed = 0, busy = false;
     try {
-      const simp = `&maxAllowableOffset=${det ? 0.0002 : 0.003}`, ok = r => r.status === 'fulfilled' && r.value && r.value.features ? r.value : { features: [] };
-      const res = await Promise.allSettled([
-        faaQuery('Class_Airspace', det ? "CLASS IN ('B','C','D','E')" : "CLASS IN ('B','C','D')", 'NAME,CLASS,LOCAL_TYPE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,IDENT', box, simp),
-        faaQuery('US_Airport', det ? '1=1' : "PRIVATEUSE=0 AND TYPE_CODE='AD' AND ICAO_ID IS NOT NULL", 'IDENT,NAME,TYPE_CODE,PRIVATEUSE,ICAO_ID,ELEVATION,SERVCITY,STATE', box, ''),
-        faaQuery('Special_Use_Airspace', '1=1', 'NAME,TYPE_CODE,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE,TIMESOFUSE,CITY,STATE', box, simp),
-        faaQuery('DoD_Mar_13', '1=1', 'Base,Facility,Reason,Floor,Ceiling,State', box, simp),
-        faaQuery('Part_Time_National_Security_UAS_Flight_Restrictions', '1=1', 'Base,Facility,Reason,Floor,Ceiling,State,ACTIVETIME,ENDTIME', box, simp),
-        faaQuery('Prohibited_Areas', '1=1', 'NAME,LOWER_VAL,LOWER_CODE,UPPER_VAL,UPPER_CODE', box, simp),
-        faaQuery('National_Defense_Airspace_TFR_Areas', '1=1', 'NAME,CITY,STATE,WKHR_RMK', box, simp),
-        det ? faaQuery('Stadiums', '1=1', 'NAME,CITY,STATE', box, '') : Promise.resolve({ features: [] }),
-      ]);
-      const [as, ap, sua, ns, nspt, pro, nda, st] = res.map(ok);
-      const bad = res.map((r, i) => r.status === 'fulfilled' && r.value && r.value.features ? -1 : i).filter(i => i >= 0);
-      res.forEach((r, i) => { if (bad.includes(i)) log('AIRSPACE', `layer ${i} failed: ${r.status === 'fulfilled' ? JSON.stringify(r.value && r.value.error || r.value).slice(0, 120) : r.reason}`); });
-      const hund = v => Math.round(v / 100);
-      for (const g of sua.features) {
-        const p = g.properties, lo = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : ftv(p.LOWER_VAL), hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) : '';
-        p.label = `${p.NAME || SUA_NAME[p.TYPE_CODE] || ''}\n${hi ? lo + '–' + hi : lo}`;
-        p.av = 'sua';
+      // 1. the phone's copy first: shown at once, and a fresh one needs no FAA request at all
+      const ask = [];
+      for (const L of need) {
+        let c = covers(AV.have[L.k], view, level) ? AV.have[L.k] : null;
+        if (!c) {
+          c = (await faaCacheGet('av.' + L.k)).find(o => covers(o, view, level) && now - o.t < FAA_KEEP_MS) || null;
+          if (c) AV.have[L.k] = c;
+        }
+        if (!c || now - c.t > (L.fresh || FAA_FRESH_MS)) ask.push(L);
       }
-      const nofly = [];
-      for (const g of ns.features) { const p = g.properties; p.kind = 'nsufr'; p.av = 'nofly'; p.label = 'NO DRONES\n' + (p.Facility || p.Base || ''); nofly.push(g); }
-      for (const g of nspt.features) { const p = g.properties; p.kind = 'nsufr-pt'; p.av = 'nofly'; p.label = 'NO DRONES (part time)\n' + (p.Facility || p.Base || ''); nofly.push(g); }
-      for (const g of pro.features) { const p = g.properties; p.kind = 'prohib'; p.av = 'nofly'; p.label = 'PROHIBITED\n' + (p.NAME || ''); nofly.push(g); }
-      for (const g of nda.features) { const p = g.properties; p.kind = 'nda'; p.av = 'nofly'; p.label = 'TFR\n' + (p.NAME || '').replace(/ NATIONAL DEFENSE AIRSPACE TFR/i, ''); nofly.push(g); }
-      const ring = (lon, lat, m) => { const pts = []; for (let i = 0; i <= 72; i++) { const a = i / 72 * 2 * Math.PI;
-        pts.push([lon + m * Math.sin(a) / (111320 * Math.cos(lat * Math.PI / 180)), lat + m * Math.cos(a) / 110540]); } return pts; };
-      const stad = st.features.filter(g => g.geometry && g.geometry.type === 'Point').map(g => ({ type: 'Feature',
-        properties: Object.assign({}, g.properties, { av: 'stadium', label: (g.properties.NAME || 'Stadium') + '\n3 NM during events' }),
-        geometry: { type: 'Polygon', coordinates: [ring(g.geometry.coordinates[0], g.geometry.coordinates[1], 5556)] } }));
-      map.getSource('sua').setData(fc(sua.features));
-      map.getSource('nofly').setData(fc(nofly));
-      map.getSource('stadium').setData(fc(stad));
-      for (const f of as.features || []) {
-        const p = f.properties;
-        p.k = p.LOCAL_TYPE === 'CLASS_E5' ? 'E5' : p.CLASS;
-        const lo = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : ftv(p.LOWER_VAL), hi = p.UPPER_VAL > 0 ? ftv(p.UPPER_VAL) : '';
-        p.label = `${p.CLASS}${p.IDENT ? ' ' + p.IDENT : ''}  ${hi ? lo + '–' + hi : lo}`;
-        // sectional-style block: ceiling over floor in hundreds of feet MSL; class D shows its ceiling in brackets
-        const lo100 = p.LOWER_CODE === 'SFC' || !p.LOWER_VAL ? 'SFC' : String(Math.round(p.LOWER_VAL / 100));
-        p.alt = p.CLASS === 'D' ? (p.UPPER_VAL > 0 ? `[${Math.round(p.UPPER_VAL / 100)}]` : '') :
-          p.UPPER_VAL > 0 ? `${Math.round(p.UPPER_VAL / 100)}\n${lo100}` : '';
-        p.av = 'class';
-      }
-      for (const f of ap.features || []) {
-        const p = f.properties;
-        p.kind = p.TYPE_CODE === 'HP' ? 'heli' : String(p.PRIVATEUSE) === '1' ? 'private' : 'public';
-        p.code = p.ICAO_ID || p.IDENT || '';
-      }
-      AV.airspace = as.features || []; AV.airports = ap.features || [];
-      // a layer that failed (weak signal, FAA server busy) is not counted as loaded: it is tried again in 15 s
-      AV.box = bad.length ? null : box; AV.level = level; AV.failAt = bad.length ? Date.now() : 0;
-      map.getSource('airspace').setData(fc(AV.airspace));
-      map.getSource('airports').setData(fc(AV.airports));
-    } catch (err) { log('AIRSPACE', 'load failed: ' + err); AV.failAt = Date.now(); }
-    AV.busy = false;
-    if (AV.again || AV.failAt) { AV.again = false; clearTimeout(AV.retry); AV.retry = setTimeout(() => loadAviation(false), AV.failAt ? 15000 : 50); }
+      avDraw(det);
+      // 2. the FAA, only for what the phone lacks, and not while it is answering "too many requests"
+      if (ask.length && Date.now() >= (AV.coolUntil || 0)) {
+        const simp = `&maxAllowableOffset=${det ? 0.0002 : 0.003}`;
+        const res = await Promise.allSettled(ask.map(L => faaQuery(L.svc, L.where ? L.where(det) : '1=1', L.fields, box, L.simp ? simp : '')));
+        const t = Date.now();
+        res.forEach((r, i) => {
+          const L = ask[i];
+          if (r.status === 'fulfilled') { const ent = { box, level, t, features: r.value.features }; AV.have[L.k] = ent; faaCachePut('av.' + L.k, ent); }
+          else { failed++; if (r.reason && r.reason.busy) busy = true; else log('AIRSPACE', `${L.svc} failed: ${r.reason}`); }
+        });
+        if (busy) log('AIRSPACE', `FAA server busy (too many requests): ${failed} of ${ask.length} layers kept as they were, next try in ${faaBusy()} s`);
+        else if (!failed) AV.fails = 0;
+        avDraw(det);
+      } else failed = ask.length;   // still waiting out the FAA's "too many requests"
+    } catch (err) { log('AIRSPACE', 'load failed: ' + err); failed = failed || 1; }
+    AV.busy = false; AV.tried = box;
+    // a layer that failed (weak signal, FAA busy) is not counted as loaded: tried again in 15 s, or when the FAA's wait is over
+    if (failed) { AV.nextTry = Math.max(AV.coolUntil || 0, Date.now() + 15000); avRetry(AV.nextTry - Date.now()); }
+    else { AV.nextTry = 0; if (AV.again) { AV.again = false; avRetry(50); } }
   }
   let avTimer = 0;
   map.on('moveend', () => { clearTimeout(avTimer); avTimer = setTimeout(() => loadAviation(false), 400); });
-  // LAANC grid squares (only when zoomed in: ~0.9 km squares, thousands per county)
-  const LA = { box: null, busy: false };
+  // LAANC grid squares (only when zoomed in: ~0.9 km squares, thousands per county), kept on the phone like the layers above
+  const LA = { box: null, t: 0, busy: false };
   async function loadLaanc(force) {
     if (!S.mapReady || map.getZoom() < 11) return;
     if (LA.busy) { LA.again = true; return; }
-    const bb = map.getBounds(), w = bb.getWest(), s = bb.getSouth(), e = bb.getEast(), n = bb.getNorth();
-    if (!force && LA.box && w >= LA.box[0] && s >= LA.box[1] && e <= LA.box[2] && n <= LA.box[3]) return;
-    const dx = (e - w) * 0.35, dy = (n - s) * 0.35, box = [w - dx, s - dy, e + dx, n + dy].map(v => +v.toFixed(4));
+    const bb = map.getBounds(), view = [bb.getWest(), bb.getSouth(), bb.getEast(), bb.getNorth()], now = Date.now();
+    if (!force && LA.box && boxIn(view, LA.box) && now - LA.t <= FAA_FRESH_MS) return;
+    const [w, s, e, n] = view, dx = (e - w) * 0.35, dy = (n - s) * 0.35, box = [w - dx, s - dy, e + dx, n + dy].map(v => +v.toFixed(4));
     LA.busy = true;
+    let retry = 0;
     try {
-      const d = await faaQuery('FAA_UAS_FacilityMap_Data', '1=1', 'CEILING,APT1_FAAID,APT1_NAME,APT1_LAANC', box, '&resultRecordCount=2000');
-      for (const g of d.features || []) g.properties.av = 'laanc';
-      if (!d.features) throw new Error(JSON.stringify(d.error || d).slice(0, 120));
-      map.getSource('laanc').setData(fc(d.features)); LA.box = box;
-    } catch (err) { log('AIRSPACE', 'LAANC load failed: ' + err); }
+      let c = LA.box && boxIn(view, LA.box) ? { box: LA.box, t: LA.t } : null;
+      if (!c) {
+        c = (await faaCacheGet('laanc')).find(o => boxIn(view, o.box) && now - o.t < FAA_KEEP_MS) || null;
+        if (c) { map.getSource('laanc').setData(fc(c.features)); LA.box = c.box; LA.t = c.t; }
+      }
+      if (!c || now - c.t > FAA_FRESH_MS) {
+        if (Date.now() < (AV.coolUntil || 0)) retry = AV.coolUntil - Date.now();
+        else {
+          const d = await faaQuery('FAA_UAS_FacilityMap_Data', '1=1', 'CEILING,APT1_FAAID,APT1_NAME,APT1_LAANC', box, '&resultRecordCount=2000');
+          for (const g of d.features) g.properties.av = 'laanc';
+          map.getSource('laanc').setData(fc(d.features)); LA.box = box; LA.t = Date.now(); AV.fails = 0;
+          faaCachePut('laanc', { box, level: 'detail', t: LA.t, features: d.features });
+        }
+      }
+    } catch (err) {
+      if (err.busy) { const s2 = faaBusy(); log('AIRSPACE', `LAANC: FAA server busy (too many requests), next try in ${s2} s`); retry = s2 * 1000; }
+      else { log('AIRSPACE', 'LAANC load failed: ' + err); retry = 15000; }
+    }
     LA.busy = false;
-    if (LA.again) { LA.again = false; setTimeout(() => loadLaanc(false), 50); }
+    if (retry) { clearTimeout(LA.retry); LA.retry = setTimeout(() => loadLaanc(false), retry); }
+    else if (LA.again) { LA.again = false; setTimeout(() => loadLaanc(false), 50); }
   }
+
   // tap the map: what airspace is here
   function avLines(pt) {
     const lay = ids => ids.filter(id => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none');
@@ -2433,7 +2529,8 @@
       setF(inner, 'fromsub', p ? 'No drone position yet' : 'Turn on location to see distance');
     }
     setF(inner, 'airspace', esc(S.settings.airspace === false ? 'Turn on "Airspace and airports" in settings' :
-      hasPos(d) ? (airspaceSummary(d.lat, d.lon) || 'Loading FAA airspace…') : '—'));
+      hasPos(d) ? (airspaceSummary(d.lat, d.lon) ||
+        (Date.now() < (AV.coolUntil || 0) ? 'FAA airspace server busy, trying again shortly' : 'Loading FAA airspace…')) : '—'));
     const drive = inner.querySelector('[data-f="drivebtn"]');
     if (hasPilot(d)) {
       const pd = hasPos(d) ? dist(d.pilotLat, d.pilotLon, d.lat, d.lon) : null;
